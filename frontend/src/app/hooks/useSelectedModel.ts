@@ -1,26 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { ALLOWED_MODEL_IDS, DEFAULT_MODEL_ID } from "../components/assistant/ModelToggle";
+import { useCallback, useState } from "react";
+import { DEFAULT_MODEL_ID, FALLBACK_CASE_MODELS } from "../lib/caseModels";
 
 const STORAGE_KEY = "mike.selectedModel";
 
 function readStored(): string {
     if (typeof window === "undefined") return DEFAULT_MODEL_ID;
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw && ALLOWED_MODEL_IDS.has(raw)) return raw;
+    if (raw && isAllowedCaseModelId(raw)) return raw;
     return DEFAULT_MODEL_ID;
 }
 
-export function useSelectedModel(): [string, (id: string) => void] {
-    const [model, setModelState] = useState<string>(DEFAULT_MODEL_ID);
+function isAllowedCaseModelId(id: string): boolean {
+    return FALLBACK_CASE_MODELS.some((model) => model.id === id) || id.includes("/");
+}
 
-    useEffect(() => {
-        setModelState(readStored());
-    }, []);
+export function useSelectedModel(): [string, (id: string) => void] {
+    const [model, setModelState] = useState<string>(() => readStored());
 
     const setModel = useCallback((id: string) => {
-        const next = ALLOWED_MODEL_IDS.has(id) ? id : DEFAULT_MODEL_ID;
+        const next = isAllowedCaseModelId(id) ? id : DEFAULT_MODEL_ID;
         setModelState(next);
         if (typeof window !== "undefined") {
             window.localStorage.setItem(STORAGE_KEY, next);

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
-import { createServerSupabase } from "../lib/supabase";
+import { createServerDb } from "../lib/db";
 import { buildContentDisposition, downloadFile } from "../lib/storage";
 import { verifyDownload } from "../lib/downloadTokens";
 import { ensureDocAccess } from "../lib/access";
@@ -25,7 +25,7 @@ downloadsRouter.get("/:token", requireAuth, async (req, res) => {
     if (!info)
         return void res.status(404).json({ detail: "Invalid link" });
 
-    const db = createServerSupabase();
+    const db = createServerDb();
     let version:
         | {
               id: string;
@@ -57,7 +57,7 @@ downloadsRouter.get("/:token", requireAuth, async (req, res) => {
     if (!access.ok)
         return void res.status(404).json({ detail: "File not found" });
 
-    const raw = await downloadFile(info.path);
+    const raw = await downloadFile(info.path, { db });
     if (!raw)
         return void res.status(404).json({ detail: "File not found" });
 

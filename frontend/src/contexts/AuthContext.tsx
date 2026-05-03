@@ -1,13 +1,7 @@
 "use client";
 
-import React, {
-    createContext,
-    useContext,
-    useEffect,
-    useState,
-    ReactNode,
-} from "react";
-import { supabase } from "@/lib/supabase";
+import React, { createContext, useContext, useEffect, ReactNode } from "react";
+import { authClient } from "@/lib/auth-client";
 
 interface User {
     id: string;
@@ -24,61 +18,31 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-    const [user, setUser] = useState<User | null>(null);
-    const [authLoading, setAuthLoading] = useState(true);
+    const { data: session, isPending, refetch } = authClient.useSession();
+    const authUser = session?.user;
+    const userId = authUser?.id ?? null;
+    const user: User | null = userId
+        ? {
+              id: userId,
+              email: authUser?.email || "",
+          }
+        : null;
 
     useEffect(() => {
-        const ensureProfile = async (accessToken: string) => {
-            const apiBase =
-                process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
-            await fetch(`${apiBase}/user/profile`, {
-                method: "POST",
-                headers: { Authorization: `Bearer ${accessToken}` },
-            }).catch((e) => {
-                console.log(e);
-            });
-        };
-
-        const checkUser = async () => {
-            const {
-                data: { session },
-            } = await supabase.auth.getSession();
-
-            if (session?.user) {
-                setUser({
-                    id: session.user.id,
-                    email: session.user.email || "",
-                });
-                ensureProfile(session.access_token);
-            }
-            setAuthLoading(false);
-        };
-
-        checkUser();
-
-        const {
-            data: { subscription },
-        } = supabase.auth.onAuthStateChange(async (_event, session) => {
-            if (session?.user) {
-                setUser({
-                    id: session.user.id,
-                    email: session.user.email || "",
-                });
-                ensureProfile(session.access_token);
-            } else {
-                setUser(null);
-            }
-            setAuthLoading(false);
+        if (!userId) return;
+        const apiBase =
+            process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+        fetch(`${apiBase}/user/profile`, {
+            method: "POST",
+            credentials: "include",
+        }).catch((e) => {
+            console.log(e);
         });
-
-        return () => {
-            subscription.unsubscribe();
-        };
-    }, []);
+    }, [userId]);
 
     const signOut = async () => {
-        await supabase.auth.signOut();
-        setUser(null);
+        await authClient.signOut();
+        await refetch();
     };
 
     return (
@@ -86,7 +50,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             value={{
                 user,
                 isAuthenticated: !!user,
-                authLoading,
+                authLoading: isPending,
                 signOut,
             }}
         >

@@ -11,41 +11,35 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { isModelAvailable } from "@/app/lib/modelAvailability";
+import {
+    DEFAULT_MODEL_ID,
+    FALLBACK_CASE_MODELS,
+    GROUP_ORDER,
+    modelOptionsOrFallback,
+    type ModelOption,
+} from "@/app/lib/caseModels";
 
-export interface ModelOption {
-    id: string;
-    label: string;
-    group: "Anthropic" | "Google";
-}
+export { DEFAULT_MODEL_ID, FALLBACK_CASE_MODELS };
+export type { ModelOption };
 
-export const MODELS: ModelOption[] = [
-    { id: "claude-opus-4-7", label: "Claude Opus 4.7", group: "Anthropic" },
-    { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", group: "Anthropic" },
-    { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", group: "Google" },
-    { id: "gemini-3-flash-preview", label: "Gemini 3 Flash", group: "Google" },
-];
-
-export const DEFAULT_MODEL_ID = "gemini-3-flash-preview";
-
-export const ALLOWED_MODEL_IDS = new Set(MODELS.map((m) => m.id));
-
-const GROUP_ORDER: ModelOption["group"][] = ["Anthropic", "Google"];
+export const ALLOWED_MODEL_IDS = new Set(FALLBACK_CASE_MODELS.map((m) => m.id));
 
 interface Props {
     value: string;
     onChange: (id: string) => void;
     apiKeys?: {
-        claudeApiKey: string | null;
-        geminiApiKey: string | null;
+        caseApiKeyConfigured: boolean;
     };
+    models?: ModelOption[];
 }
 
-export function ModelToggle({ value, onChange, apiKeys }: Props) {
+export function ModelToggle({ value, onChange, apiKeys, models }: Props) {
     const [isOpen, setIsOpen] = useState(false);
-    const selected = MODELS.find((m) => m.id === value);
+    const options = modelOptionsOrFallback(models);
+    const selected = options.find((m) => m.id === value);
     const selectedLabel = selected?.label ?? "Model";
     const selectedAvailable = apiKeys
-        ? isModelAvailable(value, apiKeys)
+        ? isModelAvailable(value, apiKeys, options)
         : true;
 
     return (
@@ -71,7 +65,7 @@ export function ModelToggle({ value, onChange, apiKeys }: Props) {
             </DropdownMenuTrigger>
             <DropdownMenuContent className="w-56 z-50" side="top" align="start">
                 {GROUP_ORDER.map((group, gi) => {
-                    const items = MODELS.filter((m) => m.group === group);
+                    const items = options.filter((m) => m.group === group);
                     if (items.length === 0) return null;
                     return (
                         <div key={group}>
@@ -81,7 +75,7 @@ export function ModelToggle({ value, onChange, apiKeys }: Props) {
                             </DropdownMenuLabel>
                             {items.map((m) => {
                                 const available = apiKeys
-                                    ? isModelAvailable(m.id, apiKeys)
+                                    ? isModelAvailable(m.id, apiKeys, options)
                                     : true;
                                 return (
                                     <DropdownMenuItem

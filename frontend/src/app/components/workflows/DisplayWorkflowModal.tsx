@@ -7,6 +7,7 @@ import {
     Folder,
     MessageSquare,
     Search,
+    Sparkles,
     Table2,
     X,
 } from "lucide-react";
@@ -173,6 +174,16 @@ function MarkdownBody({ content }: { content: string }) {
 // Right panel for assistant workflows (select screen)
 // ---------------------------------------------------------------------------
 function AssistantPanel({ workflow }: { workflow: MikeWorkflow }) {
+    const hasCaseSkill = !!workflow.case_skill_slug;
+    const previewContent =
+        workflow.composed_prompt_md ??
+        workflow.case_skill_content_snapshot ??
+        workflow.prompt_md ??
+        "_No prompt defined._";
+    const skillTags = Array.isArray(workflow.case_skill_tags)
+        ? workflow.case_skill_tags
+        : [];
+
     return (
         <div className="flex-1 border-l border-t border-gray-200 flex flex-col overflow-hidden px-3 pb-3">
             <div className="py-3 shrink-0">
@@ -180,10 +191,35 @@ function AssistantPanel({ workflow }: { workflow: MikeWorkflow }) {
                     Workflow Prompt
                 </p>
             </div>
+            {hasCaseSkill && (
+                <div className="mb-3 rounded-md border border-emerald-100 bg-emerald-50 px-3 py-2">
+                    <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-800">
+                        <Sparkles className="h-3.5 w-3.5" />
+                        <span className="truncate">
+                            {workflow.case_skill_name ?? workflow.case_skill_slug}
+                        </span>
+                    </div>
+                    {workflow.case_skill_summary && (
+                        <p className="mt-1 line-clamp-2 text-xs text-emerald-700/80">
+                            {workflow.case_skill_summary}
+                        </p>
+                    )}
+                    {skillTags.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                            {skillTags.slice(0, 5).map((tag) => (
+                                <span
+                                    key={tag}
+                                    className="rounded-full bg-white/70 px-1.5 py-0.5 text-[10px] text-emerald-700"
+                                >
+                                    {tag}
+                                </span>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
             <div className="flex-1 overflow-y-auto px-4 py-3 text-sm border border-gray-200 rounded-md text-gray-600 leading-relaxed font-serif bg-gray-50">
-                <MarkdownBody
-                    content={workflow.prompt_md ?? "_No prompt defined._"}
-                />
+                <MarkdownBody content={previewContent} />
             </div>
         </div>
     );
@@ -514,7 +550,15 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                                 {/* List */}
                                 <div className="overflow-y-auto flex-1">
                                     {workflows
-                                        .filter((wfItem) => !listSearch || wfItem.title.toLowerCase().includes(listSearch.toLowerCase()))
+                                        .filter((wfItem) => {
+                                            if (!listSearch) return true;
+                                            const q = listSearch.toLowerCase();
+                                            return (
+                                                wfItem.title.toLowerCase().includes(q) ||
+                                                (wfItem.case_skill_name ?? "").toLowerCase().includes(q) ||
+                                                (wfItem.case_skill_summary ?? "").toLowerCase().includes(q)
+                                            );
+                                        })
                                         .map((wfItem) => {
                                             const isSelected = selected?.id === wfItem.id;
                                             const Icon = wfItem.type === "tabular" ? Table2 : MessageSquare;

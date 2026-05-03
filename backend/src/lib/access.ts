@@ -11,9 +11,9 @@
  * owner-only (delete, rename, member management).
  */
 
-import type { createServerSupabase } from "./supabase";
+import type { createServerDb } from "./db";
 
-type Db = ReturnType<typeof createServerSupabase>;
+type Db = ReturnType<typeof createServerDb>;
 
 export type ProjectAccess =
     | {

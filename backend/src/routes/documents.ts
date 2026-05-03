@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
-import { createServerSupabase } from "../lib/supabase";
+import { createServerDb } from "../lib/db";
 import {
   buildContentDisposition,
   downloadFile,
@@ -23,6 +23,7 @@ import {
 } from "../lib/documentVersions";
 import { ensureDocAccess } from "../lib/access";
 import { singleFileUpload } from "../lib/upload";
+import { registerCaseStoredObject, syncDocumentVersionToCase } from "../lib/caseSync";
 
 export const documentsRouter = Router();
 const ALLOWED_TYPES = new Set(["pdf", "docx", "doc"]);
@@ -30,7 +31,7 @@ const ALLOWED_TYPES = new Set(["pdf", "docx", "doc"]);
 // GET /single-documents
 documentsRouter.get("/", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
-  const db = createServerSupabase();
+  const db = createServerDb();
   const { data, error } = await db
     .from("documents")
     .select("*")
@@ -54,7 +55,7 @@ documentsRouter.post(
   singleFileUpload("file"),
   async (req, res) => {
     const userId = res.locals.userId as string;
-    const db = createServerSupabase();
+    const db = createServerDb();
     await handleDocumentUpload(req, res, userId, null, db);
   },
 );
@@ -63,7 +64,7 @@ documentsRouter.post(
 documentsRouter.delete("/:documentId", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const { documentId } = req.params;
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   const { data: doc, error } = await db
     .from("documents")
@@ -81,10 +82,10 @@ documentsRouter.delete("/:documentId", requireAuth, async (req, res) => {
     .select("storage_path, pdf_storage_path")
     .eq("document_id", documentId);
   await Promise.all(
-    (versions ?? []).flatMap((v) =>
+    ((versions ?? []) as { storage_path?: string | null; pdf_storage_path?: string | null }[]).flatMap((v) =>
       [v.storage_path, v.pdf_storage_path]
         .filter((p): p is string => typeof p === "string" && p.length > 0)
-        .map((p) => deleteFile(p).catch(() => {})),
+        .map((p) => deleteFile(p, { db }).catch(() => {})),
     ),
   );
   await db.from("documents").delete().eq("id", documentId);
@@ -100,7 +101,7 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
   const { documentId } = req.params;
   const versionIdParam =
     typeof req.query.version_id === "string" ? req.query.version_id : null;
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   const { data: doc } = await db
     .from("documents")
@@ -125,7 +126,7 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
     isDocx && active.pdf_storage_path
       ? active.pdf_storage_path
       : active.storage_path;
-  const raw = await downloadFile(servePath);
+  const raw = await downloadFile(servePath, { db });
   if (!raw)
     return void res
       .status(404)
@@ -161,7 +162,7 @@ documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
   if (!Array.isArray(document_ids) || document_ids.length === 0)
     return void res.status(400).json({ detail: "document_ids is required" });
 
-  const db = createServerSupabase();
+  const db = createServerDb();
   const { data: rawDocs, error } = await db
     .from("documents")
     .select("id, filename, file_type, current_version_id, user_id, project_id")
@@ -170,7 +171,12 @@ documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
   if (error) return void res.status(500).json({ detail: error.message });
   // Filter to docs the user actually has access to (own + shared-project).
   const accessChecks = await Promise.all(
-    (rawDocs ?? []).map(async (d) => ({
+    ((rawDocs ?? []) as {
+      id: string;
+      filename: string;
+      user_id: string;
+      project_id: string | null;
+    }[]).map(async (d) => ({
       doc: d,
       access: await ensureDocAccess(
         d as { user_id: string; project_id: string | null },
@@ -193,7 +199,7 @@ documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
     docs.map(async (doc) => {
       const active = await loadActiveVersion(doc.id, db);
       if (!active) return;
-      const raw = await downloadFile(active.storage_path);
+      const raw = await downloadFile(active.storage_path, { db });
       if (!raw) return;
       zip.file(doc.filename, Buffer.from(raw));
     }),
@@ -213,7 +219,7 @@ documentsRouter.get("/:documentId/url", requireAuth, async (req, res) => {
   const userEmail = res.locals.userEmail as string | undefined;
   const { documentId } = req.params;
   const versionIdParam = typeof req.query.version_id === "string" ? req.query.version_id : null;
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   const { data: doc, error } = await db
     .from("documents")
@@ -239,6 +245,7 @@ documentsRouter.get("/:documentId/url", requireAuth, async (req, res) => {
     active.storage_path,
     3600,
     downloadFilename,
+    { db },
   );
   if (!url)
     return void res.status(503).json({ detail: "Storage not configured" });
@@ -264,7 +271,7 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
   const userEmail = res.locals.userEmail as string | undefined;
   const { documentId } = req.params;
   const versionIdParam = typeof req.query.version_id === "string" ? req.query.version_id : null;
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   const { data: doc, error } = await db
     .from("documents")
@@ -281,7 +288,7 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
   if (!active)
     return void res.status(404).json({ detail: "No file available" });
 
-  const raw = await downloadFile(active.storage_path);
+  const raw = await downloadFile(active.storage_path, { db });
   if (!raw)
     return void res.status(404).json({ detail: "Document bytes not available" });
 
@@ -347,7 +354,7 @@ documentsRouter.get("/:documentId/versions", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string | undefined;
   const { documentId } = req.params;
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   const { data: doc } = await db
     .from("documents")
@@ -384,7 +391,7 @@ documentsRouter.post(
     const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
     const { documentId } = req.params;
-    const db = createServerSupabase();
+    const db = createServerDb();
 
     const file = req.file;
     if (!file)
@@ -415,7 +422,7 @@ documentsRouter.post(
     // Peg the new version into a predictable /versions/:id path under the
     // existing document folder so ops can spot the history in storage.
     const versionSlug = crypto.randomUUID().replace(/-/g, "");
-    const key = versionStorageKey(
+    let key = versionStorageKey(
       userId,
       documentId,
       versionSlug,
@@ -425,14 +432,24 @@ documentsRouter.post(
       suffix === "pdf"
         ? "application/pdf"
         : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const uploadedBytes = file.buffer.buffer.slice(
+      file.buffer.byteOffset,
+      file.buffer.byteOffset + file.buffer.byteLength,
+    ) as ArrayBuffer;
     try {
-      await uploadFile(
+      key = await uploadFile(
         key,
-        file.buffer.buffer.slice(
-          file.buffer.byteOffset,
-          file.buffer.byteOffset + file.buffer.byteLength,
-        ) as ArrayBuffer,
+        uploadedBytes,
         contentType,
+        {
+          db,
+          userId: doc.user_id as string,
+          projectId: (doc.project_id as string | null) ?? null,
+          documentId,
+          filename: file.originalname,
+          role: "source",
+          autoIndex: true,
+        },
       );
     } catch (e) {
       console.error("[versions/upload] storage write failed", e);
@@ -448,14 +465,24 @@ documentsRouter.post(
     if (suffix === "docx" || suffix === "doc") {
       try {
         const pdfBuf = await docxToPdf(file.buffer);
-        const pdfKey = `converted-pdfs/${userId}/${documentId}/${versionSlug}.pdf`;
-        await uploadFile(
+        let pdfKey = `converted-pdfs/${userId}/${documentId}/${versionSlug}.pdf`;
+        const pdfBytes = pdfBuf.buffer.slice(
+          pdfBuf.byteOffset,
+          pdfBuf.byteOffset + pdfBuf.byteLength,
+        ) as ArrayBuffer;
+        pdfKey = await uploadFile(
           pdfKey,
-          pdfBuf.buffer.slice(
-            pdfBuf.byteOffset,
-            pdfBuf.byteOffset + pdfBuf.byteLength,
-          ) as ArrayBuffer,
+          pdfBytes,
           "application/pdf",
+          {
+            db,
+            userId: doc.user_id as string,
+            projectId: (doc.project_id as string | null) ?? null,
+            documentId,
+            filename: `${versionSlug}.pdf`,
+            role: "pdf_rendition",
+            autoIndex: false,
+          },
         );
         pdfStoragePath = pdfKey;
       } catch (err) {
@@ -533,6 +560,31 @@ documentsRouter.post(
       .update(documentsUpdate)
       .eq("id", documentId);
 
+    void syncDocumentVersionToCase({
+      documentId,
+      versionId: versionRow.id as string,
+      userId: doc.user_id as string,
+      projectId: (doc.project_id as string | null) ?? null,
+      filename: defaultDisplayName,
+      contentType,
+      bytes: uploadedBytes,
+      db,
+    }).catch((err) => console.error("[case-sync] version upload failed", err));
+
+    if (pdfStoragePath && pdfStoragePath !== key) {
+      void registerCaseStoredObject({
+        documentId,
+        versionId: versionRow.id as string,
+        userId: doc.user_id as string,
+        projectId: (doc.project_id as string | null) ?? null,
+        storageUri: pdfStoragePath,
+        filename: `${versionSlug}.pdf`,
+        contentType: "application/pdf",
+        role: "pdf_rendition",
+        db,
+      }).catch((err) => console.error("[case-sync] pdf rendition link failed", err));
+    }
+
     res.status(201).json(versionRow);
   },
 );
@@ -547,7 +599,7 @@ documentsRouter.patch(
     const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
     const { documentId, versionId } = req.params;
-    const db = createServerSupabase();
+    const db = createServerDb();
 
     const { data: doc } = await db
       .from("documents")
@@ -592,7 +644,7 @@ documentsRouter.get(
     const { documentId } = req.params;
     const versionIdParam =
       typeof req.query.version_id === "string" ? req.query.version_id : null;
-    const db = createServerSupabase();
+    const db = createServerDb();
 
     const { data: doc } = await db
       .from("documents")
@@ -609,7 +661,7 @@ documentsRouter.get(
     if (!active)
       return void res.status(404).json({ detail: "No file available" });
 
-    const raw = await downloadFile(active.storage_path);
+    const raw = await downloadFile(active.storage_path, { db });
     if (!raw)
       return void res
         .status(404)
@@ -630,7 +682,7 @@ async function handleEditResolution(
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string | undefined;
   const { documentId, editId } = req.params;
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   console.log(`[edit-resolution] incoming ${mode}`, {
     userId,
@@ -691,7 +743,7 @@ async function handleEditResolution(
 
   const { data: doc, error: docErr } = await db
     .from("documents")
-    .select("id, current_version_id, user_id, project_id")
+    .select("id, current_version_id, user_id, project_id, filename")
     .eq("id", documentId)
     .single();
   console.log(`[edit-resolution] fetched doc`, { doc, docErr });
@@ -710,7 +762,7 @@ async function handleEditResolution(
   if (!latestPath)
     return void res.status(404).json({ detail: "No file to edit" });
 
-  const raw = await downloadFile(latestPath);
+  const raw = await downloadFile(latestPath, { db });
   console.log(`[edit-resolution] downloaded bytes`, {
     byteLength: raw?.byteLength ?? 0,
   });
@@ -774,11 +826,38 @@ async function handleEditResolution(
     latestPath,
     byteLength: ab.byteLength,
   });
-  await uploadFile(
+  const rewrittenPath = await uploadFile(
     latestPath,
     ab,
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    {
+      db,
+      userId: doc.user_id as string,
+      projectId: (doc.project_id as string | null) ?? null,
+      documentId,
+      versionId: doc.current_version_id as string,
+      filename: (doc.filename as string | null) ?? "document.docx",
+      role: "source",
+      autoIndex: true,
+    },
   );
+  if (rewrittenPath !== latestPath) {
+    await db
+      .from("document_versions")
+      .update({ storage_path: rewrittenPath, updated_at: new Date().toISOString() })
+      .eq("id", doc.current_version_id);
+  }
+
+  void syncDocumentVersionToCase({
+    documentId,
+    versionId: doc.current_version_id as string,
+    userId: doc.user_id as string,
+    projectId: (doc.project_id as string | null) ?? null,
+    filename: (doc.filename as string | null) ?? "document.docx",
+    contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    bytes: ab,
+    db,
+  }).catch((err) => console.error("[case-sync] edit resolution failed", err));
 
   const { error: statusErr } = await db
     .from("document_edits")
@@ -809,7 +888,7 @@ async function handleEditResolution(
     ok: true,
     version_id: doc.current_version_id,
     download_url: buildDownloadUrl(
-      latestPath,
+      rewrittenPath,
       (filenameRow?.filename as string) ?? "document.docx",
     ),
     remaining_pending: remainingPending ?? 0,
@@ -835,7 +914,7 @@ async function handleDocumentUpload(
   res: import("express").Response,
   userId: string,
   projectId: string | null,
-  db: ReturnType<typeof createServerSupabase>,
+  db: ReturnType<typeof createServerDb>,
 ) {
   const file = req.file;
   if (!file) return void res.status(400).json({ detail: "file is required" });
@@ -871,24 +950,29 @@ async function handleDocumentUpload(
 
   try {
     const docId = doc.id as string;
-    const key = storageKey(userId, docId, filename);
+    let key = storageKey(userId, docId, filename);
     const contentType =
       suffix === "pdf"
         ? "application/pdf"
         : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    await uploadFile(
-      key,
-      content.buffer.slice(
-        content.byteOffset,
-        content.byteOffset + content.byteLength,
-      ) as ArrayBuffer,
-      contentType,
-    );
-
     const rawBuf = content.buffer.slice(
       content.byteOffset,
       content.byteOffset + content.byteLength,
     ) as ArrayBuffer;
+    key = await uploadFile(
+      key,
+      rawBuf,
+      contentType,
+      {
+        db,
+        userId,
+        projectId,
+        documentId: docId,
+        filename,
+        role: "source",
+        autoIndex: true,
+      },
+    );
     const tree = await extractStructureTree(rawBuf, suffix, filename);
     const pageCount = suffix === "pdf" ? await countPdfPages(rawBuf) : null;
 
@@ -897,14 +981,24 @@ async function handleDocumentUpload(
     if (suffix === "docx" || suffix === "doc") {
       try {
         const pdfBuf = await docxToPdf(content);
-        const pdfKey = convertedPdfKey(userId, docId);
-        await uploadFile(
+        let pdfKey = convertedPdfKey(userId, docId);
+        const pdfBytes = pdfBuf.buffer.slice(
+          pdfBuf.byteOffset,
+          pdfBuf.byteOffset + pdfBuf.byteLength,
+        ) as ArrayBuffer;
+        pdfKey = await uploadFile(
           pdfKey,
-          pdfBuf.buffer.slice(
-            pdfBuf.byteOffset,
-            pdfBuf.byteOffset + pdfBuf.byteLength,
-          ) as ArrayBuffer,
+          pdfBytes,
           "application/pdf",
+          {
+            db,
+            userId,
+            projectId,
+            documentId: docId,
+            filename: `${docId}.pdf`,
+            role: "pdf_rendition",
+            autoIndex: false,
+          },
         );
         pdfStoragePath = pdfKey;
       } catch (err) {
@@ -949,6 +1043,31 @@ async function handleDocumentUpload(
         updated_at: new Date().toISOString(),
       })
       .eq("id", docId);
+
+    void syncDocumentVersionToCase({
+      documentId: docId,
+      versionId: versionRow.id as string,
+      userId,
+      projectId,
+      filename,
+      contentType,
+      bytes: rawBuf,
+      db,
+    }).catch((err) => console.error("[case-sync] upload failed", err));
+
+    if (pdfStoragePath && pdfStoragePath !== key) {
+      void registerCaseStoredObject({
+        documentId: docId,
+        versionId: versionRow.id as string,
+        userId,
+        projectId,
+        storageUri: pdfStoragePath,
+        filename: `${docId}.pdf`,
+        contentType: "application/pdf",
+        role: "pdf_rendition",
+        db,
+      }).catch((err) => console.error("[case-sync] pdf rendition link failed", err));
+    }
 
     const { data: updated } = await db
       .from("documents")

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabase";
+import { authClient } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import Link from "next/link";
@@ -28,7 +28,7 @@ export default function LoginPage() {
         setError(null);
 
         try {
-            const { data, error } = await supabase.auth.signInWithPassword({
+            const { error } = await authClient.signIn.email({
                 email,
                 password,
             });
@@ -36,8 +36,12 @@ export default function LoginPage() {
             if (error) throw error;
 
             router.push("/assistant");
-        } catch (error: any) {
-            setError(error.message || "An error occurred during login");
+        } catch (error: unknown) {
+            setError(
+                error instanceof Error
+                    ? error.message
+                    : "An error occurred during login",
+            );
         } finally {
             setLoading(false);
         }

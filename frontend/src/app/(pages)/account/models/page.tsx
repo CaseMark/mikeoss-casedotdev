@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { AlertCircle, Check, ChevronDown, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,14 +13,23 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useUserProfile } from "@/contexts/UserProfileContext";
-import { MODELS } from "@/app/components/assistant/ModelToggle";
+import { isModelAvailable } from "@/app/lib/modelAvailability";
 import {
-    isModelAvailable,
-    modelGroupToProvider,
-} from "@/app/lib/modelAvailability";
+    GROUP_ORDER,
+    modelOptionsOrFallback,
+    type ModelOption,
+} from "@/app/lib/caseModels";
+import type { CaseApiKeyStatus, CaseModelCatalog } from "@/app/lib/mikeApi";
 
 export default function ModelsAndApiKeysPage() {
-    const { profile, updateModelPreference, updateApiKey } = useUserProfile();
+    const { profile, updateModelPreference, updateCaseApiKey } =
+        useUserProfile();
+    const apiKeys = {
+        caseApiKeyConfigured: profile?.caseApiKey.configured ?? false,
+    };
+    const models = modelOptionsOrFallback(profile?.caseModels);
+    const keySource = profile?.caseApiKey.source ?? "missing";
+    const usingServerKey = keySource === "server";
 
     return (
         <div className="space-y-4">
@@ -39,12 +48,10 @@ export default function ModelsAndApiKeysPage() {
                         <TabularModelDropdown
                             value={
                                 profile?.tabularModel ??
-                                "gemini-3-flash-preview"
+                                "casemark/core-large"
                             }
-                            apiKeys={{
-                                claudeApiKey: profile?.claudeApiKey ?? null,
-                                geminiApiKey: profile?.geminiApiKey ?? null,
-                            }}
+                            apiKeys={apiKeys}
+                            models={models}
                             onChange={(id) =>
                                 updateModelPreference("tabularModel", id)
                             }
@@ -61,34 +68,141 @@ export default function ModelsAndApiKeysPage() {
                     </h2>
                 </div>
                 <p className="text-sm text-gray-500 mb-4 max-w-xl">
-                    You must provide your own API keys for the app to work or
-                    add your API keys into the .env file if you are running your
-                    own instance of Mike.
+                    Add your Case.dev API key to use Mike&rsquo;s model gateway,
+                    vault indexing, document search, and Case-powered
+                    extraction features.
                 </p>
                 <p className="text-xs text-gray-400 mb-4 max-w-xl">
-                    Title generation automatically routes to the cheapest model
-                    of whichever provider you&rsquo;ve configured (Gemini Flash
-                    Lite if a Gemini key is set, otherwise Claude Haiku).
+                    The key is validated by the backend and stored encrypted.
+                    Only the saved key status is shown here.
                 </p>
+                <CaseStatusSummary
+                    status={profile?.caseApiKey}
+                    modelCatalog={profile?.caseModelCatalog}
+                    modelCount={models.length}
+                />
                 <div className="space-y-4 max-w-xl">
                     <ApiKeyField
-                        label="Anthropic (Claude) API Key"
-                        placeholder="sk-ant-…"
-                        initialValue={profile?.claudeApiKey ?? ""}
-                        onSave={(value) =>
-                            updateApiKey("claude", value.trim() || null)
+                        label="Case.dev API Key"
+                        placeholder={
+                            profile?.caseApiKey.source === "user" &&
+                            profile.caseApiKey.last4
+                                ? `Saved key ending in ${profile.caseApiKey.last4}`
+                                : usingServerKey && profile?.caseApiKey.last4
+                                  ? `Using local server key ending in ${profile.caseApiKey.last4}`
+                                : "sk_case_..."
                         }
-                    />
-                    <ApiKeyField
-                        label="Google (Gemini) API Key"
-                        placeholder="AI…"
-                        initialValue={profile?.geminiApiKey ?? ""}
-                        onSave={(value) =>
-                            updateApiKey("gemini", value.trim() || null)
+                        status={
+                            profile?.caseApiKey.source === "user" &&
+                            profile.caseApiKey.configured
+                                ? `Verified key ending in ${profile.caseApiKey.last4 ?? "****"}`
+                                : usingServerKey
+                                  ? "Using local server key for development"
+                                : undefined
                         }
+                        error={profile?.caseApiKey.error ?? undefined}
+                        onSave={(value) =>
+                            updateCaseApiKey(value.trim() || null)
+                        }
+                        canClear={profile?.caseApiKey.source === "user"}
+                        onClear={() => updateCaseApiKey(null)}
                     />
                 </div>
             </div>
+        </div>
+    );
+}
+
+function CaseStatusSummary({
+    status,
+    modelCatalog,
+    modelCount,
+}: {
+    status?: CaseApiKeyStatus;
+    modelCatalog?: Omit<CaseModelCatalog, "models">;
+    modelCount: number;
+}) {
+    const configured = status?.configured ?? false;
+    const source = status?.source ?? "missing";
+    const sourceLabel =
+        source === "user"
+            ? "Personal key"
+            : source === "server"
+              ? "Local server key"
+              : "No key";
+    const verifiedAt = status?.verified_at
+        ? new Date(status.verified_at).toLocaleString()
+        : null;
+
+    return (
+        <div className="mb-5 max-w-xl rounded-md border border-gray-200 bg-white px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+                <div>
+                    <p className="text-sm font-medium text-gray-900">
+                        {sourceLabel}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                        {configured
+                            ? verifiedAt
+                                ? `Verified ${verifiedAt}`
+                                : "Verified"
+                            : "Add a Case.dev key to enable model routing and vault search."}
+                    </p>
+                </div>
+                <span
+                    className={`rounded-full px-2 py-0.5 text-xs ${
+                        configured
+                            ? "bg-emerald-50 text-emerald-700"
+                            : "bg-gray-100 text-gray-500"
+                    }`}
+                >
+                    {configured ? "Ready" : "Missing"}
+                </span>
+            </div>
+            <div className="mt-3 grid grid-cols-4 gap-2 text-xs text-gray-600">
+                <StatusPill
+                    label="LLM"
+                    ok={status?.capabilities.llm ?? false}
+                />
+                <StatusPill
+                    label="Vault"
+                    ok={status?.capabilities.vault ?? false}
+                />
+                <StatusPill
+                    label="Skills"
+                    ok={status?.capabilities.skills ?? false}
+                />
+                <StatusPill
+                    label="Models"
+                    value={`${status?.capabilities.model_count ?? modelCount}`}
+                    ok={modelCount > 0}
+                />
+            </div>
+            <p className="mt-3 text-xs text-gray-400">
+                Model catalog: {modelCatalog?.source ?? "fallback"}
+                {modelCatalog?.key_source
+                    ? ` via ${modelCatalog.key_source} key`
+                    : ""}
+                {modelCatalog?.error ? ` (${modelCatalog.error})` : ""}
+            </p>
+        </div>
+    );
+}
+
+function StatusPill({
+    label,
+    ok,
+    value,
+}: {
+    label: string;
+    ok: boolean;
+    value?: string;
+}) {
+    return (
+        <div className="rounded-md border border-gray-200 px-2 py-1">
+            <span className={ok ? "text-emerald-700" : "text-gray-400"}>
+                {label}: {value ?? (ok ? "ready" : "missing")}
+            </span>
         </div>
     );
 }
@@ -97,15 +211,16 @@ function TabularModelDropdown({
     value,
     onChange,
     apiKeys,
+    models,
 }: {
     value: string;
     onChange: (id: string) => void;
-    apiKeys: { claudeApiKey: string | null; geminiApiKey: string | null };
+    apiKeys: { caseApiKeyConfigured: boolean };
+    models: ModelOption[];
 }) {
     const [isOpen, setIsOpen] = useState(false);
-    const selected = MODELS.find((m) => m.id === value);
-    const selectedAvailable = isModelAvailable(value, apiKeys);
-    const groups: ("Anthropic" | "Google")[] = ["Anthropic", "Google"];
+    const selected = models.find((m) => m.id === value);
+    const selectedAvailable = isModelAvailable(value, apiKeys, models);
 
     return (
         <DropdownMenu onOpenChange={setIsOpen}>
@@ -132,8 +247,8 @@ function TabularModelDropdown({
                 style={{ width: "var(--radix-dropdown-menu-trigger-width)" }}
                 align="start"
             >
-                {groups.map((group, gi) => {
-                    const items = MODELS.filter((m) => m.group === group);
+                {GROUP_ORDER.map((group, gi) => {
+                    const items = models.filter((m) => m.group === group);
                     if (items.length === 0) return null;
                     return (
                         <div key={group}>
@@ -142,10 +257,10 @@ function TabularModelDropdown({
                                 {group}
                             </DropdownMenuLabel>
                             {items.map((m) => {
-                                const provider = modelGroupToProvider(m.group);
                                 const available = isModelAvailable(
                                     m.id,
                                     apiKeys,
+                                    models,
                                 );
                                 return (
                                     <DropdownMenuItem
@@ -154,7 +269,7 @@ function TabularModelDropdown({
                                         onSelect={() => onChange(m.id)}
                                         title={
                                             !available
-                                                ? `Add a ${provider === "claude" ? "Claude" : "Gemini"} API key to use this model`
+                                                ? "Add a Case.dev API key to use this model"
                                                 : undefined
                                         }
                                     >
@@ -162,6 +277,11 @@ function TabularModelDropdown({
                                             className={`flex-1 ${available ? "" : "text-gray-400"}`}
                                         >
                                             {m.label}
+                                            {m.source === "live" && (
+                                                <span className="ml-1 text-[10px] text-gray-400">
+                                                    live
+                                                </span>
+                                            )}
                                         </span>
                                         {!available && (
                                             <AlertCircle className="h-3.5 w-3.5 text-red-500 ml-1" />
@@ -183,40 +303,69 @@ function TabularModelDropdown({
 function ApiKeyField({
     label,
     placeholder,
-    initialValue,
+    status,
+    error,
     onSave,
+    canClear,
+    onClear,
 }: {
     label: string;
     placeholder: string;
-    initialValue: string;
-    onSave: (value: string) => Promise<boolean>;
+    status?: string;
+    error?: string;
+    onSave: (value: string) => Promise<{ ok: boolean; error?: string }>;
+    canClear?: boolean;
+    onClear: () => Promise<{ ok: boolean; error?: string }>;
 }) {
-    const [value, setValue] = useState(initialValue);
+    const [value, setValue] = useState("");
     const [reveal, setReveal] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [localError, setLocalError] = useState<string | null>(null);
 
-    useEffect(() => {
-        setValue(initialValue);
-    }, [initialValue]);
-
-    const dirty = value !== initialValue;
+    const hasValue = !!value.trim();
 
     const handleSave = async () => {
+        if (!hasValue) return;
         setIsSaving(true);
-        const ok = await onSave(value);
+        setLocalError(null);
+        const result = await onSave(value);
         setIsSaving(false);
-        if (ok) {
+        if (result.ok) {
+            setValue("");
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
         } else {
-            alert(`Failed to save ${label}.`);
+            setLocalError(result.error ?? `Failed to save ${label}.`);
+        }
+    };
+
+    const handleClear = async () => {
+        setIsSaving(true);
+        setLocalError(null);
+        const result = await onClear();
+        setIsSaving(false);
+        if (result.ok) {
+            setValue("");
+            setSaved(true);
+            setTimeout(() => setSaved(false), 2000);
+        } else {
+            setLocalError(result.error ?? `Failed to clear ${label}.`);
         }
     };
 
     return (
         <div>
             <label className="text-sm text-gray-600 block mb-2">{label}</label>
+            {status && (
+                <p className="text-xs text-gray-500 mb-2">{status}</p>
+            )}
+            {error && (
+                <p className="text-xs text-red-500 mb-2">{error}</p>
+            )}
+            {localError && (
+                <p className="text-xs text-red-500 mb-2">{localError}</p>
+            )}
             <div className="flex gap-2">
                 <div className="relative flex-1">
                     <Input
@@ -243,7 +392,7 @@ function ApiKeyField({
                 </div>
                 <Button
                     onClick={handleSave}
-                    disabled={isSaving || !dirty || saved}
+                    disabled={isSaving || !hasValue || saved}
                     className="min-w-[80px] transition-all bg-black hover:bg-gray-900 text-white"
                 >
                     {isSaving ? (
@@ -257,6 +406,16 @@ function ApiKeyField({
                         "Save"
                     )}
                 </Button>
+                {canClear && (
+                    <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleClear}
+                        disabled={isSaving || saved}
+                    >
+                        Clear
+                    </Button>
+                )}
             </div>
         </div>
     );

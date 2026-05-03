@@ -68,8 +68,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     const [model, setModel] = useSelectedModel();
     const { profile } = useUserProfile();
     const apiKeys = {
-        claudeApiKey: profile?.claudeApiKey ?? null,
-        geminiApiKey: profile?.geminiApiKey ?? null,
+        caseApiKeyConfigured: profile?.caseApiKey.configured ?? false,
     };
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const [docSelectorOpen, setDocSelectorOpen] = useState(false);
@@ -116,7 +115,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     const handleSubmit = () => {
         const query = value.trim();
         if (!query || isLoading) return;
-        if (!isModelAvailable(model, apiKeys)) {
+        if (!isModelAvailable(model, apiKeys, profile?.caseModels)) {
             setApiKeyModalProvider(getModelProvider(model));
             return;
         }
@@ -278,6 +277,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                                 value={model}
                                 onChange={setModel}
                                 apiKeys={apiKeys}
+                                models={profile?.caseModels}
                             />
                             <button
                                 type="button"

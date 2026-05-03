@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
-import { createServerSupabase } from "../lib/supabase";
+import { createServerDb } from "../lib/db";
 import {
     buildProjectDocContext,
     buildMessages,
@@ -15,7 +15,7 @@ import { getUserApiKeys } from "../lib/userSettings";
 import { checkProjectAccess } from "../lib/access";
 
 const PROJECT_SYSTEM_PROMPT_EXTRA = `PROJECT CONTEXT:
-You are operating within a project folder that contains a collection of legal documents the user has organised for a single matter. The user's questions will usually refer to one or more documents in this project — your job is to find the relevant files to work on. Use list_documents to see what is available and fetch_documents / read_document to pull in any documents you need before answering.
+You are operating within a project folder that contains a collection of legal documents the user has organised for a single matter. The user's questions will usually refer to one or more documents in this project — your job is to find the relevant files to work on. Use list_documents to see what is available, search_documents to locate relevant passages across the project, and fetch_documents / read_document to pull in any documents you need before answering.
 
 A document may currently be displayed in the user's side panel; when provided, treat it as context for the user's likely focus, but do NOT assume it is the only or definitive document the user is asking about. If the request could apply to other files in the project, identify and read those as well. Prefer coverage across the relevant project documents over an over-narrow reading of only the displayed one.
 
@@ -38,7 +38,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
             attached_documents?: { filename: string; document_id: string }[];
         };
 
-    const db = createServerSupabase();
+    const db = createServerDb();
 
     // Verify the user has access to the project (owner or shared member).
     const projectAccess = await checkProjectAccess(

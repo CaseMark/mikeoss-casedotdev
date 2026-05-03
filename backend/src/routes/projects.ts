@@ -1,15 +1,16 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
-import { createServerSupabase } from "../lib/supabase";
-import { createClient } from "@supabase/supabase-js";
+import { createServerDb } from "../lib/db";
 import {
   attachActiveVersionPaths,
   attachLatestVersionNumbers,
+  loadActiveVersion,
 } from "../lib/documentVersions";
 import { downloadFile, uploadFile, storageKey } from "../lib/storage";
 import { docxToPdf, convertedPdfKey } from "../lib/convert";
 import { checkProjectAccess } from "../lib/access";
 import { singleFileUpload } from "../lib/upload";
+import { registerCaseStoredObject, syncDocumentVersionToCase } from "../lib/caseSync";
 
 export const projectsRouter = Router();
 const ALLOWED_TYPES = new Set(["pdf", "docx", "doc"]);
@@ -18,7 +19,7 @@ const ALLOWED_TYPES = new Set(["pdf", "docx", "doc"]);
 projectsRouter.get("/", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string;
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   const { data: ownProjects, error: ownError } = await db
     .from("projects")
@@ -82,7 +83,7 @@ projectsRouter.post("/", requireAuth, async (req, res) => {
   if (!name?.trim())
     return void res.status(400).json({ detail: "name is required" });
 
-  const db = createServerSupabase();
+  const db = createServerDb();
   const { data, error } = await db
     .from("projects")
     .insert({
@@ -102,7 +103,7 @@ projectsRouter.get("/:projectId", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string;
   const { projectId } = req.params;
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   const { data: project, error } = await db
     .from("projects")
@@ -146,7 +147,7 @@ projectsRouter.get("/:projectId/people", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string | undefined;
   const { projectId } = req.params;
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   const { data: project } = await db
     .from("projects")
@@ -247,7 +248,7 @@ projectsRouter.patch("/:projectId", requireAuth, async (req, res) => {
     updates.shared_with = cleaned;
   }
 
-  const db = createServerSupabase();
+  const db = createServerDb();
   const { data, error } = await db
     .from("projects")
     .update({ ...updates, updated_at: new Date().toISOString() })
@@ -274,7 +275,7 @@ projectsRouter.patch("/:projectId", requireAuth, async (req, res) => {
 projectsRouter.delete("/:projectId", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const { projectId } = req.params;
-  const db = createServerSupabase();
+  const db = createServerDb();
   const { error } = await db
     .from("projects")
     .delete()
@@ -289,7 +290,7 @@ projectsRouter.get("/:projectId/documents", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string | undefined;
   const { projectId } = req.params;
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   const access = await checkProjectAccess(projectId, userId, userEmail, db);
   if (!access.ok)
@@ -316,7 +317,7 @@ projectsRouter.post(
     const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
     const { projectId, documentId } = req.params;
-    const db = createServerSupabase();
+    const db = createServerDb();
 
     const access = await checkProjectAccess(projectId, userId, userEmail, db);
     if (!access.ok)
@@ -338,7 +339,91 @@ projectsRouter.post(
     if (doc.project_id === projectId) return void res.json(doc);
 
     if (doc.project_id === null) {
-      // Standalone → assign project_id
+      // Standalone → project: move the current version into the project
+      // owner's Case vault so project storage follows Mike's sharing model.
+      const active = await loadActiveVersion(documentId, db);
+      if (active?.storage_path) {
+        const sourceBytes = await downloadFile(active.storage_path, { db });
+        if (!sourceBytes) {
+          return void res
+            .status(500)
+            .json({ detail: "Failed to read source document bytes" });
+        }
+        const contentType =
+          doc.file_type === "pdf"
+            ? "application/pdf"
+            : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        const filename = doc.filename as string;
+        let projectSourcePath = storageKey(userId, documentId, filename);
+        projectSourcePath = await uploadFile(projectSourcePath, sourceBytes, contentType, {
+          db,
+          userId: doc.user_id as string,
+          projectId,
+          documentId,
+          versionId: active.id,
+          filename,
+          role: "source",
+          autoIndex: true,
+        });
+
+        let projectPdfPath: string | null = null;
+        if (active.pdf_storage_path) {
+          if (active.pdf_storage_path === active.storage_path || doc.file_type === "pdf") {
+            projectPdfPath = projectSourcePath;
+          } else {
+            const pdfBytes = await downloadFile(active.pdf_storage_path, { db });
+            if (pdfBytes) {
+              let pdfPath = convertedPdfKey(userId, documentId);
+              pdfPath = await uploadFile(pdfPath, pdfBytes, "application/pdf", {
+                db,
+                userId: doc.user_id as string,
+                projectId,
+                documentId,
+                versionId: active.id,
+                filename: `${filename.replace(/\.[^/.]+$/, "") || "document"}.pdf`,
+                role: "pdf_rendition",
+                autoIndex: false,
+              });
+              projectPdfPath = pdfPath;
+              void registerCaseStoredObject({
+                documentId,
+                versionId: active.id,
+                userId: doc.user_id as string,
+                projectId,
+                storageUri: pdfPath,
+                filename: `${filename.replace(/\.[^/.]+$/, "") || "document"}.pdf`,
+                contentType: "application/pdf",
+                bytes: pdfBytes,
+                role: "pdf_rendition",
+                db,
+              }).catch((err) => console.error("[case-sync] assigned PDF link failed", err));
+            }
+          }
+        } else if (doc.file_type === "pdf") {
+          projectPdfPath = projectSourcePath;
+        }
+
+        await db
+          .from("document_versions")
+          .update({
+            storage_path: projectSourcePath,
+            pdf_storage_path: projectPdfPath,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", active.id);
+        void syncDocumentVersionToCase({
+          documentId,
+          versionId: active.id,
+          userId: doc.user_id as string,
+          projectId,
+          filename,
+          contentType,
+          bytes: sourceBytes,
+          db,
+        }).catch((err) => console.error("[case-sync] assigned document failed", err));
+      }
+
+      // Assign project_id after the storage move succeeds.
       const { data: updated, error } = await db
         .from("documents")
         .update({ project_id: projectId, updated_at: new Date().toISOString() })
@@ -380,18 +465,26 @@ projectsRouter.post(
           .eq("id", doc.current_version_id)
           .single();
         if (srcV?.storage_path) {
-          const srcBytes = await downloadFile(srcV.storage_path);
+          const srcBytes = await downloadFile(srcV.storage_path, { db });
           if (!srcBytes) {
             return void res
               .status(500)
               .json({ detail: "Failed to read source document bytes" });
           }
-          const newKey = storageKey(userId, copy.id as string, doc.filename);
+          let newKey = storageKey(userId, copy.id as string, doc.filename);
           const contentType =
             doc.file_type === "pdf"
               ? "application/pdf"
               : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-          await uploadFile(newKey, srcBytes, contentType);
+          newKey = await uploadFile(newKey, srcBytes, contentType, {
+            db,
+            userId,
+            projectId,
+            documentId: copy.id as string,
+            filename: doc.filename,
+            role: "source",
+            autoIndex: true,
+          });
 
           // PDFs share one object for source + display rendition. DOCX
           // store the converted PDF at a separate `converted-pdfs/` key —
@@ -399,13 +492,21 @@ projectsRouter.post(
           // back through libreoffice.
           let newPdfPath: string | null = null;
           if (srcV.pdf_storage_path) {
-            if (srcV.pdf_storage_path === srcV.storage_path) {
+            if (srcV.pdf_storage_path === srcV.storage_path || doc.file_type === "pdf") {
               newPdfPath = newKey;
             } else {
-              const pdfBytes = await downloadFile(srcV.pdf_storage_path);
+              const pdfBytes = await downloadFile(srcV.pdf_storage_path, { db });
               if (pdfBytes) {
-                const newPdfKey = convertedPdfKey(userId, copy.id as string);
-                await uploadFile(newPdfKey, pdfBytes, "application/pdf");
+                let newPdfKey = convertedPdfKey(userId, copy.id as string);
+                newPdfKey = await uploadFile(newPdfKey, pdfBytes, "application/pdf", {
+                  db,
+                  userId,
+                  projectId,
+                  documentId: copy.id as string,
+                  filename: `${doc.filename.replace(/\.[^/.]+$/, "") || "document"}.pdf`,
+                  role: "pdf_rendition",
+                  autoIndex: false,
+                });
                 newPdfPath = newPdfKey;
               }
             }
@@ -429,6 +530,29 @@ projectsRouter.post(
               .from("documents")
               .update({ current_version_id: copyVersionRowId })
               .eq("id", copy.id);
+            void syncDocumentVersionToCase({
+              documentId: copy.id as string,
+              versionId: copyVersionRowId,
+              userId,
+              projectId,
+              filename: doc.filename,
+              contentType,
+              bytes: srcBytes,
+              db,
+            }).catch((err) => console.error("[case-sync] copied document failed", err));
+            if (newPdfPath && newPdfPath !== newKey) {
+              void registerCaseStoredObject({
+                documentId: copy.id as string,
+                versionId: copyVersionRowId,
+                userId,
+                projectId,
+                storageUri: newPdfPath,
+                filename: `${doc.filename.replace(/\.[^/.]+$/, "") || "document"}.pdf`,
+                contentType: "application/pdf",
+                role: "pdf_rendition",
+                db,
+              }).catch((err) => console.error("[case-sync] copied PDF link failed", err));
+            }
           }
         }
       }
@@ -446,7 +570,7 @@ projectsRouter.post(
     const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
     const { projectId } = req.params;
-    const db = createServerSupabase();
+    const db = createServerDb();
 
     const access = await checkProjectAccess(projectId, userId, userEmail, db);
     if (!access.ok)
@@ -465,7 +589,7 @@ projectsRouter.get("/:projectId/chats", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string | undefined;
   const { projectId } = req.params;
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   const access = await checkProjectAccess(projectId, userId, userEmail, db);
   if (!access.ok)
@@ -490,7 +614,7 @@ projectsRouter.post("/:projectId/folders", requireAuth, async (req, res) => {
   const { name, parent_folder_id } = req.body as { name: string; parent_folder_id?: string | null };
   if (!name?.trim()) return void res.status(400).json({ detail: "name is required" });
 
-  const db = createServerSupabase();
+  const db = createServerDb();
   const access = await checkProjectAccess(projectId, userId, userEmail, db);
   if (!access.ok) return void res.status(404).json({ detail: "Project not found" });
 
@@ -517,7 +641,7 @@ projectsRouter.patch("/:projectId/folders/:folderId", requireAuth, async (req, r
   const { projectId, folderId } = req.params;
   const body = req.body as { name?: string; parent_folder_id?: string | null };
 
-  const db = createServerSupabase();
+  const db = createServerDb();
   const access = await checkProjectAccess(projectId, userId, userEmail, db);
   if (!access.ok) return void res.status(404).json({ detail: "Project not found" });
 
@@ -550,7 +674,7 @@ projectsRouter.delete("/:projectId/folders/:folderId", requireAuth, async (req, 
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string | undefined;
   const { projectId, folderId } = req.params;
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   const access = await checkProjectAccess(projectId, userId, userEmail, db);
   if (!access.ok) return void res.status(404).json({ detail: "Project not found" });
@@ -571,7 +695,7 @@ projectsRouter.patch("/:projectId/documents/:documentId/folder", requireAuth, as
   const { projectId, documentId } = req.params;
   const { folder_id } = req.body as { folder_id: string | null };
 
-  const db = createServerSupabase();
+  const db = createServerDb();
   const access = await checkProjectAccess(projectId, userId, userEmail, db);
   if (!access.ok) return void res.status(404).json({ detail: "Project not found" });
 
@@ -588,7 +712,7 @@ export async function handleDocumentUpload(
   res: import("express").Response,
   userId: string,
   projectId: string | null,
-  db: ReturnType<typeof createServerSupabase>,
+  db: ReturnType<typeof createServerDb>,
 ) {
   const file = req.file;
   if (!file) return void res.status(400).json({ detail: "file is required" });
@@ -625,24 +749,25 @@ export async function handleDocumentUpload(
 
   try {
     const docId = doc.id as string;
-    const key = storageKey(userId, docId, filename);
+    let key = storageKey(userId, docId, filename);
     const contentType =
       suffix === "pdf"
         ? "application/pdf"
         : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    await uploadFile(
-      key,
-      content.buffer.slice(
-        content.byteOffset,
-        content.byteOffset + content.byteLength,
-      ) as ArrayBuffer,
-      contentType,
-    );
-
     const rawBuf = content.buffer.slice(
       content.byteOffset,
       content.byteOffset + content.byteLength,
     ) as ArrayBuffer;
+    key = await uploadFile(key, rawBuf, contentType, {
+      db,
+      userId,
+      projectId,
+      documentId: docId,
+      filename,
+      role: "source",
+      autoIndex: true,
+    });
+
     const tree = await extractStructureTree(rawBuf, suffix, filename);
     const pageCount = suffix === "pdf" ? await countPdfPages(rawBuf) : null;
 
@@ -651,14 +776,23 @@ export async function handleDocumentUpload(
     if (suffix === "docx" || suffix === "doc") {
       try {
         const pdfBuf = await docxToPdf(content);
-        const pdfKey = convertedPdfKey(userId, docId);
-        await uploadFile(
+        let pdfKey = convertedPdfKey(userId, docId);
+        pdfKey = await uploadFile(
           pdfKey,
           pdfBuf.buffer.slice(
             pdfBuf.byteOffset,
             pdfBuf.byteOffset + pdfBuf.byteLength,
           ) as ArrayBuffer,
           "application/pdf",
+          {
+            db,
+            userId,
+            projectId,
+            documentId: docId,
+            filename: `${filename.replace(/\.[^/.]+$/, "") || "document"}.pdf`,
+            role: "pdf_rendition",
+            autoIndex: false,
+          },
         );
         pdfStoragePath = pdfKey;
       } catch (err) {
@@ -702,6 +836,30 @@ export async function handleDocumentUpload(
         updated_at: new Date().toISOString(),
       })
       .eq("id", docId);
+
+    void syncDocumentVersionToCase({
+      documentId: docId,
+      versionId: versionRow.id as string,
+      userId,
+      projectId,
+      filename,
+      contentType,
+      bytes: rawBuf,
+      db,
+    }).catch((err) => console.error("[case-sync] project upload failed", err));
+    if (pdfStoragePath && pdfStoragePath !== key) {
+      void registerCaseStoredObject({
+        documentId: docId,
+        versionId: versionRow.id as string,
+        userId,
+        projectId,
+        storageUri: pdfStoragePath,
+        filename: `${filename.replace(/\.[^/.]+$/, "") || "document"}.pdf`,
+        contentType: "application/pdf",
+        role: "pdf_rendition",
+        db,
+      }).catch((err) => console.error("[case-sync] project PDF link failed", err));
+    }
 
     const { data: updated } = await db
       .from("documents")

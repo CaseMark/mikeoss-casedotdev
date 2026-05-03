@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
-import { createServerSupabase } from "../lib/supabase";
+import { createServerDb } from "../lib/db";
 import {
     buildDocContext,
     buildMessages,
@@ -24,7 +24,7 @@ export const chatRouter = Router();
 // listed per-project via GET /projects/:projectId/chats.
 chatRouter.get("/", requireAuth, async (req, res) => {
     const userId = res.locals.userId as string;
-    const db = createServerSupabase();
+    const db = createServerDb();
 
     const { data: ownProjects, error: projErr } = await db
         .from("projects")
@@ -53,7 +53,7 @@ chatRouter.get("/", requireAuth, async (req, res) => {
 chatRouter.post("/create", requireAuth, async (req, res) => {
     const userId = res.locals.userId as string;
     const projectId: string | null = req.body.project_id ?? null;
-    const db = createServerSupabase();
+    const db = createServerDb();
     const { data, error } = await db
         .from("chats")
         .insert({ user_id: userId, project_id: projectId ?? undefined })
@@ -69,7 +69,7 @@ chatRouter.get("/:chatId", requireAuth, async (req, res) => {
     const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
     const { chatId } = req.params;
-    const db = createServerSupabase();
+    const db = createServerDb();
 
     const { data: chat, error } = await db
         .from("chats")
@@ -109,7 +109,7 @@ chatRouter.get("/:chatId", requireAuth, async (req, res) => {
 // EditCards render with the real state.
 async function hydrateEditStatuses(
     messages: Record<string, unknown>[],
-    db: ReturnType<typeof createServerSupabase>,
+    db: ReturnType<typeof createServerDb>,
 ): Promise<Record<string, unknown>[]> {
     const editIds = new Set<string>();
     const versionIds = new Set<string>();
@@ -227,7 +227,7 @@ chatRouter.patch("/:chatId", requireAuth, async (req, res) => {
     if (!title)
         return void res.status(400).json({ detail: "title is required" });
 
-    const db = createServerSupabase();
+    const db = createServerDb();
     const { data, error } = await db
         .from("chats")
         .update({ title })
@@ -245,7 +245,7 @@ chatRouter.patch("/:chatId", requireAuth, async (req, res) => {
 chatRouter.delete("/:chatId", requireAuth, async (req, res) => {
     const userId = res.locals.userId as string;
     const { chatId } = req.params;
-    const db = createServerSupabase();
+    const db = createServerDb();
     const { error } = await db
         .from("chats")
         .delete()
@@ -265,7 +265,7 @@ chatRouter.post("/:chatId/generate-title", requireAuth, async (req, res) => {
     if (!message)
         return void res.status(400).json({ detail: "message is required" });
 
-    const db = createServerSupabase();
+    const db = createServerDb();
     const { data: chat, error } = await db
         .from("chats")
         .select("id, user_id, project_id")
@@ -332,7 +332,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     });
 
     const userEmail = res.locals.userEmail as string | undefined;
-    const db = createServerSupabase();
+    const db = createServerDb();
     let chatId = chat_id ?? null;
     let chatTitle: string | null = null;
 

@@ -1,25 +1,37 @@
 import { Router } from "express";
-import { createClient } from "@supabase/supabase-js";
 import { requireAuth } from "../middleware/auth";
-import { createServerSupabase } from "../lib/supabase";
-
-function getAdminClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
-    process.env.SUPABASE_SECRET_KEY ?? "",
-    { auth: { autoRefreshToken: false, persistSession: false } },
-  );
-}
+import { createServerDb } from "../lib/db";
+import {
+  composeWorkflowPrompt,
+  getCaseSkillsClient,
+  normalizeSkillTags,
+  serializeSkill,
+  skillFieldsFromDetail,
+  summarizeSkill,
+} from "../lib/caseSkills";
 
 export const workflowsRouter = Router();
 
-type Db = ReturnType<typeof createServerSupabase>;
+type Db = ReturnType<typeof createServerDb>;
 
 type WorkflowRecord = {
   id: string;
   user_id: string | null;
   is_system: boolean;
+  prompt_md?: string | null;
+  case_skill_content_snapshot?: string | null;
   [key: string]: unknown;
+};
+
+type WorkflowShareRow = {
+  workflow_id: string;
+  shared_by_user_id: string | null;
+  allow_edit: boolean;
+};
+
+type UserProfileRow = {
+  user_id: string;
+  display_name: string | null;
 };
 
 type WorkflowAccess =
@@ -78,7 +90,7 @@ workflowsRouter.get("/", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string;
   const { type } = req.query as { type?: string };
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   // Own workflows
   let ownQuery = db
@@ -100,27 +112,30 @@ workflowsRouter.get("/", requireAuth, async (req, res) => {
 
   let sharedWorkflows: Record<string, unknown>[] = [];
   if (shares && shares.length > 0) {
-    const sharedIds = shares.map((s) => s.workflow_id);
+    const typedShares = shares as WorkflowShareRow[];
+    const sharedIds = typedShares.map((s) => s.workflow_id);
     let sharedQuery = db.from("workflows").select("*").in("id", sharedIds);
     if (type) sharedQuery = sharedQuery.eq("type", type);
     const { data: wfs } = await sharedQuery;
 
     if (wfs && wfs.length > 0) {
       // Fetch sharer profiles
-      const sharerIds = [...new Set(shares.map((s) => s.shared_by_user_id).filter(Boolean))];
+      const sharerIds = [
+        ...new Set(typedShares.map((s) => s.shared_by_user_id).filter(Boolean)),
+      ] as string[];
       const { data: profiles } = sharerIds.length > 0
         ? await db.from("user_profiles").select("user_id, display_name").in("user_id", sharerIds)
         : { data: [] };
+      const typedProfiles = (profiles ?? []) as UserProfileRow[];
 
       // Fetch sharer emails via admin client
-      const admin = getAdminClient();
-      const { data: authData } = await admin.auth.admin.listUsers({ perPage: 1000 });
+      const { data: authData } = await db.auth.admin.listUsers({ perPage: 1000 });
       const authUsers = authData?.users ?? [];
 
-      sharedWorkflows = wfs.map((wf) => {
-        const share = shares.find((s) => s.workflow_id === wf.id);
+      sharedWorkflows = (wfs as WorkflowRecord[]).map((wf) => {
+        const share = typedShares.find((s) => s.workflow_id === wf.id);
         const sharerId = share?.shared_by_user_id;
-        const profile = profiles?.find((p) => p.user_id === sharerId);
+        const profile = typedProfiles.find((p) => p.user_id === sharerId);
         const authUser = authUsers.find((u) => u.id === sharerId);
         const shared_by_name = profile?.display_name || authUser?.email || null;
         return withWorkflowAccess(wf, {
@@ -132,7 +147,7 @@ workflowsRouter.get("/", requireAuth, async (req, res) => {
     }
   }
 
-  const ownWithFlag = (own ?? []).map((wf) =>
+  const ownWithFlag = ((own ?? []) as WorkflowRecord[]).map((wf) =>
     withWorkflowAccess(wf, { allowEdit: true, isOwner: true }),
   );
   res.json([...ownWithFlag, ...sharedWorkflows]);
@@ -155,7 +170,7 @@ workflowsRouter.post("/", requireAuth, async (req, res) => {
       .status(400)
       .json({ detail: "type must be 'assistant' or 'tabular'" });
 
-  const db = createServerSupabase();
+  const db = createServerDb();
   const { data, error } = await db
     .from("workflows")
     .insert({
@@ -179,12 +194,12 @@ async function handleWorkflowUpdate(req: import("express").Request, res: import(
   const { workflowId } = req.params;
   const updates: Record<string, unknown> = {};
   if (req.body.title != null) updates.title = req.body.title;
-  if (req.body.prompt_md != null) updates.prompt_md = req.body.prompt_md;
+  if ("prompt_md" in req.body) updates.prompt_md = req.body.prompt_md ?? null;
   if (req.body.columns_config != null)
     updates.columns_config = req.body.columns_config;
   if ("practice" in req.body) updates.practice = req.body.practice ?? null;
 
-  const db = createServerSupabase();
+  const db = createServerDb();
   const access = await resolveWorkflowAccess(workflowId, userId, userEmail, db);
   if (!access || access.workflow.is_system || !access.allowEdit) {
     return void res
@@ -216,11 +231,174 @@ workflowsRouter.put("/:workflowId", requireAuth, handleWorkflowUpdate);
 // PATCH /workflows/:workflowId
 workflowsRouter.patch("/:workflowId", requireAuth, handleWorkflowUpdate);
 
+// GET /workflows/skills/search
+workflowsRouter.get("/skills/search", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const rawLimit = typeof req.query.limit === "string" ? Number(req.query.limit) : 10;
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(20, Math.max(1, rawLimit))
+    : 10;
+  if (!q) return void res.status(400).json({ detail: "q is required" });
+
+  const db = createServerDb();
+  try {
+    const { client, keySource } = await getCaseSkillsClient(userId, db);
+    const result = await client.searchSkills({ query: q, limit });
+    res.json({
+      key_source: keySource,
+      methods_used: result.methods_used ?? [],
+      results: (result.results ?? []).map(summarizeSkill),
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ detail });
+  }
+});
+
+// GET /workflows/skills/custom
+workflowsRouter.get("/skills/custom", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const rawLimit = typeof req.query.limit === "string" ? Number(req.query.limit) : 50;
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(100, Math.max(1, rawLimit))
+    : 50;
+  const cursor = typeof req.query.cursor === "string" ? req.query.cursor : null;
+  const tag = typeof req.query.tag === "string" ? req.query.tag : null;
+  const db = createServerDb();
+  try {
+    const { client, keySource } = await getCaseSkillsClient(userId, db);
+    const result = await client.listCustomSkills({ limit, cursor, tag });
+    res.json({
+      key_source: keySource,
+      skills: (result.skills ?? []).map(summarizeSkill),
+      next_cursor: result.next_cursor ?? null,
+      has_more: result.has_more ?? false,
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ detail });
+  }
+});
+
+// GET /workflows/skills/:slug
+workflowsRouter.get("/skills/:slug", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const { slug } = req.params;
+  const db = createServerDb();
+  try {
+    const { client, keySource } = await getCaseSkillsClient(userId, db);
+    const skill = await client.readSkill(slug);
+    res.json({ key_source: keySource, skill: serializeSkill(skill) });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ detail });
+  }
+});
+
+// POST /workflows/from-skill
+workflowsRouter.post("/from-skill", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const slug = typeof req.body?.slug === "string" ? req.body.slug.trim() : "";
+  const title =
+    typeof req.body?.title === "string" && req.body.title.trim()
+      ? req.body.title.trim()
+      : null;
+  const practice =
+    typeof req.body?.practice === "string" && req.body.practice.trim()
+      ? req.body.practice.trim()
+      : null;
+  const promptMd =
+    typeof req.body?.prompt_md === "string" ? req.body.prompt_md : null;
+  if (!slug) return void res.status(400).json({ detail: "slug is required" });
+
+  const db = createServerDb();
+  try {
+    const { client } = await getCaseSkillsClient(userId, db);
+    const skill = await client.readSkill(slug);
+    const { data, error } = await db
+      .from("workflows")
+      .insert({
+        user_id: userId,
+        title: title ?? skill.name,
+        type: "assistant",
+        prompt_md: promptMd,
+        columns_config: null,
+        practice: practice ?? normalizeSkillTags(skill.tags)[0] ?? null,
+        is_system: false,
+        ...skillFieldsFromDetail(skill),
+      })
+      .select("*")
+      .single();
+    if (error || !data) {
+      return void res
+        .status(500)
+        .json({ detail: error?.message ?? "Failed to create workflow" });
+    }
+    res.status(201).json({
+      ...data,
+      composed_prompt_md: composeWorkflowPrompt(data),
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ detail });
+  }
+});
+
+// POST /workflows/:workflowId/refresh-skill
+workflowsRouter.post("/:workflowId/refresh-skill", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const userEmail = res.locals.userEmail as string | undefined;
+  const { workflowId } = req.params;
+  const db = createServerDb();
+  const access = await resolveWorkflowAccess(workflowId, userId, userEmail, db);
+  if (!access || access.workflow.is_system || !access.allowEdit) {
+    return void res
+      .status(404)
+      .json({ detail: "Workflow not found or not editable" });
+  }
+  const slug =
+    typeof access.workflow.case_skill_slug === "string"
+      ? access.workflow.case_skill_slug
+      : "";
+  if (!slug) {
+    return void res
+      .status(400)
+      .json({ detail: "Workflow is not linked to a Case.dev skill" });
+  }
+
+  try {
+    const { client } = await getCaseSkillsClient(userId, db);
+    const skill = await client.readSkill(slug);
+    const { data, error } = await db
+      .from("workflows")
+      .update(skillFieldsFromDetail(skill))
+      .eq("id", workflowId)
+      .eq("is_system", false)
+      .select("*")
+      .single();
+    if (error || !data) {
+      return void res
+        .status(500)
+        .json({ detail: error?.message ?? "Failed to refresh workflow skill" });
+    }
+    res.json({
+      ...data,
+      allow_edit: access.allowEdit,
+      is_owner: access.isOwner,
+      composed_prompt_md: composeWorkflowPrompt(data),
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ detail });
+  }
+});
+
 // DELETE /workflows/:workflowId
 workflowsRouter.delete("/:workflowId", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const { workflowId } = req.params;
-  const db = createServerSupabase();
+  const db = createServerDb();
   const { error } = await db
     .from("workflows")
     .delete()
@@ -234,13 +412,13 @@ workflowsRouter.delete("/:workflowId", requireAuth, async (req, res) => {
 // GET /workflows/hidden
 workflowsRouter.get("/hidden", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
-  const db = createServerSupabase();
+  const db = createServerDb();
   const { data, error } = await db
     .from("hidden_workflows")
     .select("workflow_id")
     .eq("user_id", userId);
   if (error) return void res.status(500).json({ detail: error.message });
-  res.json((data ?? []).map((r) => r.workflow_id));
+  res.json(((data ?? []) as { workflow_id: string }[]).map((r) => r.workflow_id));
 });
 
 // POST /workflows/hidden
@@ -249,7 +427,7 @@ workflowsRouter.post("/hidden", requireAuth, async (req, res) => {
   const { workflow_id } = req.body as { workflow_id: string };
   if (!workflow_id?.trim())
     return void res.status(400).json({ detail: "workflow_id is required" });
-  const db = createServerSupabase();
+  const db = createServerDb();
   const { error } = await db
     .from("hidden_workflows")
     .upsert({ user_id: userId, workflow_id }, { onConflict: "user_id,workflow_id" });
@@ -261,7 +439,7 @@ workflowsRouter.post("/hidden", requireAuth, async (req, res) => {
 workflowsRouter.delete("/hidden/:workflowId", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const { workflowId } = req.params;
-  const db = createServerSupabase();
+  const db = createServerDb();
   const { error } = await db
     .from("hidden_workflows")
     .delete()
@@ -276,7 +454,7 @@ workflowsRouter.get("/:workflowId", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const userEmail = res.locals.userEmail as string | undefined;
   const { workflowId } = req.params;
-  const db = createServerSupabase();
+  const db = createServerDb();
   const access = await resolveWorkflowAccess(workflowId, userId, userEmail, db);
   if (!access)
     return void res.status(404).json({ detail: "Workflow not found" });
@@ -292,7 +470,7 @@ workflowsRouter.get("/:workflowId", requireAuth, async (req, res) => {
 workflowsRouter.get("/:workflowId/shares", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const { workflowId } = req.params;
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   const { data: wf } = await db
     .from("workflows")
@@ -317,7 +495,7 @@ workflowsRouter.get("/:workflowId/shares", requireAuth, async (req, res) => {
 workflowsRouter.delete("/:workflowId/shares/:shareId", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const { workflowId, shareId } = req.params;
-  const db = createServerSupabase();
+  const db = createServerDb();
 
   const { data: wf } = await db
     .from("workflows")
@@ -339,7 +517,7 @@ workflowsRouter.post("/:workflowId/share", requireAuth, async (req, res) => {
 
   if (!emails?.length) return void res.status(400).json({ detail: "emails is required" });
 
-  const db = createServerSupabase();
+  const db = createServerDb();
   // Verify ownership
   const { data: wf } = await db
     .from("workflows")

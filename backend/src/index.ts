@@ -9,6 +9,7 @@ import { tabularRouter } from "./routes/tabular";
 import { workflowsRouter } from "./routes/workflows";
 import { userRouter } from "./routes/user";
 import { downloadsRouter } from "./routes/downloads";
+import { getBetterAuthNodeHandler } from "./lib/betterAuth";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -19,6 +20,11 @@ app.use(
     credentials: true,
   }),
 );
+
+app.all("/api/auth/*", async (req, res) => {
+  const handler = await getBetterAuthNodeHandler();
+  return handler(req, res);
+});
 
 app.use(express.json({ limit: "50mb" }));
 

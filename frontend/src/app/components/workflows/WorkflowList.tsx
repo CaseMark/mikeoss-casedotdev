@@ -10,14 +10,17 @@ import {
     User,
     ChevronDown,
     Check,
+    Sparkles,
 } from "lucide-react";
 import { HeaderSearchBtn } from "../shared/HeaderSearchBtn";
 import {
     listWorkflows,
+    createWorkflowFromCaseSkill,
     deleteWorkflow,
     listHiddenWorkflows,
     hideWorkflow,
     unhideWorkflow,
+    type CaseSkillSummary,
 } from "@/app/lib/mikeApi";
 import type { MikeWorkflow } from "../shared/types";
 import { BUILT_IN_WORKFLOWS, BUILT_IN_IDS } from "./builtinWorkflows";
@@ -27,8 +30,9 @@ import { ToolbarTabs } from "../shared/ToolbarTabs";
 import { RowActions } from "../shared/RowActions";
 import { MikeIcon } from "@/components/chat/mike-icon";
 import { useAuth } from "@/contexts/AuthContext";
+import { CaseSkillsCatalog } from "./CaseSkillsCatalog";
 
-type Tab = "all" | "builtin" | "custom" | "hidden";
+type Tab = "all" | "builtin" | "custom" | "skills" | "hidden";
 
 const CHECK_W = "w-8 shrink-0";
 const NAME_COL_W = "w-[300px] shrink-0";
@@ -37,6 +41,7 @@ const TABS: { id: Tab; label: string }[] = [
     { id: "all", label: "All Workflows" },
     { id: "builtin", label: "Built-in" },
     { id: "custom", label: "Custom" },
+    { id: "skills", label: "Skills" },
     { id: "hidden", label: "Hidden" },
 ];
 
@@ -75,11 +80,6 @@ export function WorkflowList() {
             .catch(() => setCustom([]))
             .finally(() => setLoading(false));
     }, []);
-
-    useEffect(() => {
-        setSelectedIds([]);
-        setActionsOpen(false);
-    }, [activeTab, practiceFilter, typeFilter]);
 
     useEffect(() => {
         function handleClick(e: MouseEvent) {
@@ -154,6 +154,11 @@ export function WorkflowList() {
         );
     }
 
+    function resetSelection() {
+        setSelectedIds([]);
+        setActionsOpen(false);
+    }
+
     async function handleHideWorkflow(id: string) {
         setHiddenBuiltinIds((prev) => [...prev, id]);
         await hideWorkflow(id).catch(() => {
@@ -199,6 +204,15 @@ export function WorkflowList() {
         await Promise.all(ids.map((id) => unhideWorkflow(id).catch(() => {})));
     }
 
+    async function handleCreateSkillWorkflow(skill: CaseSkillSummary) {
+        const workflow = await createWorkflowFromCaseSkill({
+            slug: skill.slug,
+            title: skill.name,
+        });
+        setCustom((prev) => [workflow, ...prev.filter((w) => w.id !== workflow.id)]);
+        router.push(`/workflows/${workflow.id}`);
+    }
+
     const getTypeMeta = (type: MikeWorkflow["type"]) =>
         type === "tabular"
             ? { label: "Tabular", Icon: Table2, className: "text-violet-700" }
@@ -231,6 +245,7 @@ export function WorkflowList() {
                         onClick={() => {
                             setTypeFilter(null);
                             setTypeFilterOpen(false);
+                            resetSelection();
                         }}
                         className="flex items-center justify-between w-full px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 transition-colors"
                     >
@@ -248,6 +263,7 @@ export function WorkflowList() {
                                 onClick={() => {
                                     setTypeFilter(t);
                                     setTypeFilterOpen(false);
+                                    resetSelection();
                                 }}
                                 className="flex items-center justify-between w-full px-3 py-2 text-xs hover:bg-gray-50 transition-colors"
                             >
@@ -287,6 +303,7 @@ export function WorkflowList() {
                         onClick={() => {
                             setPracticeFilter(null);
                             setPracticeFilterOpen(false);
+                            resetSelection();
                         }}
                         className="flex items-center justify-between w-full px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 transition-colors"
                     >
@@ -304,6 +321,7 @@ export function WorkflowList() {
                             onClick={() => {
                                 setPracticeFilter(p);
                                 setPracticeFilterOpen(false);
+                                resetSelection();
                             }}
                             className="flex items-center justify-between w-full px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 transition-colors"
                         >
@@ -363,11 +381,13 @@ export function WorkflowList() {
                     Workflows
                 </h1>
                 <div className="flex items-center gap-2">
-                    <HeaderSearchBtn
-                        value={search}
-                        onChange={setSearch}
-                        placeholder="Search workflows…"
-                    />
+                    {activeTab !== "skills" && (
+                        <HeaderSearchBtn
+                            value={search}
+                            onChange={setSearch}
+                            placeholder="Search workflows…"
+                        />
+                    )}
                     <button
                         onClick={() => setNewModalOpen(true)}
                         className="flex items-center justify-center p-1.5 text-gray-500 hover:text-gray-900 transition-colors"
@@ -380,11 +400,21 @@ export function WorkflowList() {
             <ToolbarTabs
                 tabs={TABS}
                 active={activeTab}
-                onChange={setActiveTab}
-                actions={toolbarActions}
+                onChange={(tab) => {
+                    setActiveTab(tab);
+                    resetSelection();
+                }}
+                actions={activeTab === "skills" ? null : toolbarActions}
             />
 
-            {/* Table */}
+            {activeTab === "skills" ? (
+                <CaseSkillsCatalog
+                    importedWorkflows={custom}
+                    onCreateWorkflow={handleCreateSkillWorkflow}
+                    onOpenWorkflow={(workflow) => router.push(`/workflows/${workflow.id}`)}
+                    className="flex-1"
+                />
+            ) : (
             <div className="flex-1 overflow-auto">
                 <div className="min-w-max">
                     {/* Column headers */}
@@ -462,7 +492,7 @@ export function WorkflowList() {
                                         Hidden Workflows
                                     </p>
                                     <p className="mt-1 text-xs text-gray-400 text-left">
-                                        Built-in workflows you've hidden will
+                                        Built-in workflows you&apos;ve hidden will
                                         appear here. You can unhide them at any
                                         time.
                                     </p>
@@ -538,6 +568,11 @@ export function WorkflowList() {
                                             <MikeIcon size={14} />
                                             Mike
                                         </span>
+                                    ) : wf.case_skill_slug ? (
+                                        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600">
+                                            <Sparkles className="h-3.5 w-3.5 text-emerald-600" />
+                                            Case
+                                        </span>
                                     ) : wf.user_id === user?.id ? (
                                         <span className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600">
                                             <User className="h-3.5 w-3.5 text-gray-500" />
@@ -589,6 +624,7 @@ export function WorkflowList() {
                     )}
                 </div>
             </div>
+            )}
 
             <DisplayWorkflowModal
                 workflows={all}

@@ -6,7 +6,7 @@ import {
     uploadFile,
 } from "./storage";
 import { convertedPdfKey } from "./convert";
-import { createServerSupabase } from "./supabase";
+import { createServerDb } from "./db";
 import {
     applyTrackedEdits,
     extractDocxBodyText,
@@ -14,6 +14,19 @@ import {
 } from "./docxTrackedChanges";
 import { buildDownloadUrl } from "./downloadTokens";
 import { attachActiveVersionPaths, loadActiveVersion } from "./documentVersions";
+import {
+    getCaseTextForDocument,
+    registerCaseStoredObject,
+    searchCaseDocuments,
+    syncDocumentVersionToCase,
+} from "./caseSync";
+import {
+    composeWorkflowPrompt,
+    getCaseSkillsClient,
+    normalizeSkillTags,
+    serializeSkill,
+    summarizeSkill,
+} from "./caseSkills";
 import {
     streamChatWithTools,
     resolveModel,
@@ -40,7 +53,20 @@ export type DocStore = Map<
     { storage_path: string; file_type: string; filename: string }
 >;
 
-export type WorkflowStore = Map<string, { title: string; prompt_md: string }>;
+export type WorkflowStore = Map<
+    string,
+    {
+        title: string;
+        prompt_md: string;
+        case_skill_slug?: string | null;
+        case_skill_name?: string | null;
+        case_skill_summary?: string | null;
+        case_skill_tags?: string[] | unknown;
+        case_skill_source?: string | null;
+        case_skill_version?: string | number | null;
+        case_skill_synced_at?: string | null;
+    }
+>;
 
 export type DocIndex = Record<
     string,
@@ -122,6 +148,9 @@ When using edit_document, any edit that adds, removes, or reorders a numbered cl
 
 WORKFLOWS:
 When a user message begins with a [Workflow: <title> (id: <id>)] marker, the user has selected a workflow and you MUST apply it. Immediately call the read_workflow tool with that exact id to load the workflow's full prompt, then follow those instructions for the current turn. Do this before producing any other output or calling any other tools (aside from any document reads the workflow requires). Do not ask the user to confirm — the selection itself is the instruction to apply the workflow.
+
+CASE.DEV SKILLS:
+Case.dev skills are reusable legal work instructions that may or may not already be imported as Mike workflows. When the user asks to find, browse, reference, choose, compare, or use a skill, call search_case_skills first. If the user asks to use or apply a specific skill, call read_case_skill with the returned slug and then follow that skill's instructions for the current turn. If read_case_skill says the skill is already imported as a workflow, prefer read_workflow on that workflow_id so Mike-specific workflow overlays are included. Do not claim a Case.dev skill exists unless search_case_skills or read_case_skill returned it.
 
 DOCUMENT NAMING IN PROSE:
 The chat-local labels ("doc-0", "doc-1", "doc-N", …) are internal handles for tool calls and citation JSON ONLY. NEVER write them in your prose response or in any text the user reads — not in body text, not in headings, not in lists, not in tool-activity descriptions. The user does not know what "doc-0" means and seeing it is jarring. When referring to a document in prose, always use its filename (e.g. "the NDA draft" or "nda_v1.docx"). This rule applies to every word streamed back to the user; the only places "doc-N" identifiers are allowed are inside tool-call arguments and inside the <CITATIONS> JSON block's "doc_id" field.
@@ -255,6 +284,57 @@ export const WORKFLOW_TOOLS = [
     },
 ];
 
+export const SKILL_TOOLS = [
+    {
+        type: "function",
+        function: {
+            name: "search_case_skills",
+            description:
+                "Search Case.dev skills and imported Case-backed Mike workflows. Call this when the user asks to find, browse, choose, compare, reference, or use skills. Returns skill slugs, summaries, tags, source, version, and any imported workflow ID.",
+            parameters: {
+                type: "object",
+                properties: {
+                    query: {
+                        type: "string",
+                        description:
+                            "Natural-language skill search query, such as 'deposition prep', 'privilege review', or a skill name. Leave empty only when listing already-imported or custom skills.",
+                    },
+                    source: {
+                        type: "string",
+                        enum: ["all", "case", "custom", "imported"],
+                        description:
+                            "Which skills to search. Defaults to all. 'case' searches the Case catalog, 'custom' lists the user's custom skills, and 'imported' searches Case skills already imported as workflows.",
+                    },
+                    limit: {
+                        type: "integer",
+                        description: "Maximum number of skills to return. Defaults to 10.",
+                        minimum: 1,
+                        maximum: 20,
+                    },
+                },
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "read_case_skill",
+            description:
+                "Read the full instructions for a Case.dev skill by slug. Call this after search_case_skills when the user wants to reference, inspect, or apply a skill in the current chat turn.",
+            parameters: {
+                type: "object",
+                properties: {
+                    slug: {
+                        type: "string",
+                        description: "The Case.dev skill slug returned by search_case_skills.",
+                    },
+                },
+                required: ["slug"],
+            },
+        },
+    },
+];
+
 export const TOOLS = [
     {
         type: "function",
@@ -272,6 +352,37 @@ export const TOOLS = [
                     },
                 },
                 required: ["doc_id"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "search_documents",
+            description:
+                "Search across the available Case.dev-indexed documents by meaning. Use this when you need to locate relevant passages across one or more documents before deciding what to read or cite. Returns matching chunks hydrated with neighboring context, document IDs, filenames, and page ranges when available.",
+            parameters: {
+                type: "object",
+                properties: {
+                    query: {
+                        type: "string",
+                        description: "Natural-language search query.",
+                    },
+                    doc_ids: {
+                        type: "array",
+                        items: { type: "string" },
+                        description:
+                            "Optional document IDs to limit the search (e.g. ['doc-0', 'doc-2']). Omit to search all available documents.",
+                    },
+                    top_k: {
+                        type: "integer",
+                        description:
+                            "Maximum number of chunks to return. Defaults to 10.",
+                        minimum: 1,
+                        maximum: 50,
+                    },
+                },
+                required: ["query"],
             },
         },
     },
@@ -488,7 +599,7 @@ export function resolveDocLabel(
 export async function enrichWithPriorEvents(
     messages: ChatMessage[],
     chatId: string | null | undefined,
-    db: ReturnType<typeof createServerSupabase>,
+    db: ReturnType<typeof createServerDb>,
     docIndex: DocIndex,
 ): Promise<ChatMessage[]> {
     if (!chatId) return messages;
@@ -596,7 +707,7 @@ export function buildMessages(
             systemContent += `- ${doc.doc_id}: ${label}\n`;
         }
         systemContent +=
-            "\nYou do NOT retain document content between conversation turns. You MUST call read_document (or fetch_documents) at the start of every response that involves a document's content, even if you have read it in a previous turn. Failure to do so will result in hallucinated or stale content.\n---\n";
+            "\nYou do NOT retain document content between conversation turns. You MUST call read_document, fetch_documents, or search_documents at the start of every response that involves a document's content, even if you have read it in a previous turn. Failure to do so will result in hallucinated or stale content.\n---\n";
     }
     formatted.push({ role: "system", content: systemContent });
 
@@ -671,7 +782,7 @@ export async function generateDocx(
     title: string,
     sections: unknown[],
     userId: string,
-    db: ReturnType<typeof createServerSupabase>,
+    db: ReturnType<typeof createServerDb>,
     options?: { landscape?: boolean; projectId?: string | null },
 ) {
     try {
@@ -831,21 +942,16 @@ export async function generateDocx(
 
         const doc = new Document({ sections: [{ properties: pageSetup, children }] });
         const buf = await Packer.toBuffer(doc);
-        const docId = crypto.randomUUID().replace(/-/g, "");
         const safeTitle =
             title
                 .replace(/[^a-zA-Z0-9 -]/g, "")
                 .trim()
                 .slice(0, 64) || "document";
         const filename = `${safeTitle}.docx`;
-        const key = generatedDocKey(userId, docId, filename);
-
-        await uploadFile(
-            key,
-            buf.buffer as ArrayBuffer,
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        );
-        const downloadUrl = buildDownloadUrl(key, filename);
+        const generatedBytes = buf.buffer.slice(
+            buf.byteOffset,
+            buf.byteOffset + buf.byteLength,
+        ) as ArrayBuffer;
 
         // Persist to DB so generated docs are first-class documents:
         // openable in the DocPanel and editable via edit_document. In
@@ -870,6 +976,25 @@ export async function generateDocx(
             };
         }
         const documentId = docRow.id as string;
+        let key = generatedDocKey(userId, documentId, filename);
+        const contentType =
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+        try {
+            key = await uploadFile(key, generatedBytes, contentType, {
+                db,
+                userId,
+                projectId: options?.projectId ?? null,
+                documentId,
+                filename,
+                role: "source",
+                autoIndex: true,
+            });
+        } catch (err) {
+            await db.from("documents").update({ status: "error" }).eq("id", documentId);
+            return { error: `Failed to store generated document: ${String(err)}` };
+        }
+        const downloadUrl = buildDownloadUrl(key, filename);
 
         const { data: versionRow, error: verErr } = await db
             .from("document_versions")
@@ -893,6 +1018,17 @@ export async function generateDocx(
             .from("documents")
             .update({ current_version_id: versionId })
             .eq("id", documentId);
+
+        void syncDocumentVersionToCase({
+            documentId,
+            versionId,
+            userId,
+            projectId: options?.projectId ?? null,
+            filename,
+            contentType,
+            bytes: generatedBytes,
+            db,
+        }).catch((err) => console.error("[case-sync] generated doc failed", err));
 
         return {
             filename,
@@ -918,11 +1054,11 @@ export async function generateDocx(
  */
 export async function loadCurrentVersionBytes(
     documentId: string,
-    db: ReturnType<typeof createServerSupabase>,
+    db: ReturnType<typeof createServerDb>,
 ): Promise<{ bytes: Buffer; storage_path: string } | null> {
     const active = await loadActiveVersion(documentId, db);
     if (!active) return null;
-    const raw = await downloadFile(active.storage_path);
+    const raw = await downloadFile(active.storage_path, { db });
     if (!raw) return null;
     return { bytes: Buffer.from(raw), storage_path: active.storage_path };
 }
@@ -936,7 +1072,7 @@ export async function runEditDocument(params: {
     documentId: string;
     userId: string;
     edits: EditInput[];
-    db: ReturnType<typeof createServerSupabase>;
+    db: ReturnType<typeof createServerDb>;
     /**
      * If provided, append these edits to the existing turn-scoped version
      * (overwrites the file at storagePath and reuses the document_versions
@@ -965,7 +1101,7 @@ export async function runEditDocument(params: {
 
     const { data: doc } = await db
         .from("documents")
-        .select("id, filename")
+        .select("id, filename, project_id")
         .eq("id", documentId)
         .single();
     if (!doc) return { ok: false, error: "Document not found." };
@@ -1003,18 +1139,43 @@ export async function runEditDocument(params: {
         newPath = reuseVersion.storagePath;
         versionRowId = reuseVersion.versionId;
         nextVersionNumber = reuseVersion.versionNumber;
-        await uploadFile(
+        newPath = await uploadFile(
             newPath,
             ab,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            {
+                db,
+                userId,
+                projectId: (doc.project_id as string | null) ?? null,
+                documentId,
+                versionId: versionRowId,
+                filename: doc.filename as string,
+                role: "source",
+                autoIndex: true,
+            },
         );
+        if (newPath !== reuseVersion.storagePath) {
+            await db
+                .from("document_versions")
+                .update({ storage_path: newPath, updated_at: new Date().toISOString() })
+                .eq("id", versionRowId);
+        }
     } else {
         const versionId = crypto.randomUUID().replace(/-/g, "");
         newPath = `documents/${userId}/${documentId}/edits/${versionId}.docx`;
-        await uploadFile(
+        newPath = await uploadFile(
             newPath,
             ab,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            {
+                db,
+                userId,
+                projectId: (doc.project_id as string | null) ?? null,
+                documentId,
+                filename: doc.filename as string,
+                role: "source",
+                autoIndex: true,
+            },
         );
 
         // Per-document sequential number for the new assistant_edit
@@ -1092,6 +1253,17 @@ export async function runEditDocument(params: {
         .update({ current_version_id: versionRowId })
         .eq("id", documentId);
 
+    void syncDocumentVersionToCase({
+        documentId,
+        versionId: versionRowId,
+        userId,
+        projectId: (doc.project_id as string | null) ?? null,
+        filename: doc.filename as string,
+        contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        bytes: ab,
+        db,
+    }).catch((err) => console.error("[case-sync] edited document failed", err));
+
     const annotations: EditAnnotation[] = insertedEdits.map((r: { id: string; change_id: string; deleted_text: string; inserted_text: string; context_before: string | null; context_after: string | null }) => {
         const src = changes.find((c) => c.id === r.change_id);
         return {
@@ -1136,7 +1308,7 @@ async function readDocumentContent(
     docStore: DocStore,
     write: (s: string) => void,
     docIndex?: DocIndex,
-    db?: ReturnType<typeof createServerSupabase>,
+    db?: ReturnType<typeof createServerDb>,
     opts?: { emitEvents?: boolean },
 ): Promise<string> {
     const emitEvents = opts?.emitEvents ?? true;
@@ -1173,6 +1345,21 @@ async function readDocumentContent(
             })}\n\n`,
         );
     try {
+        if (documentId && db) {
+            const caseText = await getCaseTextForDocument({
+                documentId,
+                versionId: docIndex?.[docLabel]?.version_id ?? null,
+                db,
+            });
+            if (caseText) {
+                console.log(
+                    `[read_document] using Case.dev extracted text length=${caseText.length} for filename="${docInfo.filename}"`,
+                );
+                emitDocRead();
+                return caseText;
+            }
+        }
+
         // Prefer the current tracked-changes version (if any) so read_document
         // reflects accepted/pending edits rather than the original upload.
         let raw: ArrayBuffer | null = null;
@@ -1195,7 +1382,7 @@ async function readDocumentContent(
             }
         }
         if (!raw) {
-            raw = await downloadFile(docInfo.storage_path);
+            raw = await downloadFile(docInfo.storage_path, db ? { db } : undefined);
             if (raw) {
                 console.log(
                     `[read_document] fallback download from storage_path="${docInfo.storage_path}" (bytes=${raw.byteLength})`,
@@ -1322,7 +1509,7 @@ async function findInDocumentContent(params: {
     docStore: DocStore;
     write: (s: string) => void;
     docIndex?: DocIndex;
-    db?: ReturnType<typeof createServerSupabase>;
+    db?: ReturnType<typeof createServerDb>;
 }): Promise<string> {
     const {
         docLabel,
@@ -1449,6 +1636,95 @@ async function findInDocumentContent(params: {
     });
 }
 
+type ChatSkillSummary = ReturnType<typeof summarizeSkill> & {
+    imported_workflow?: {
+        workflow_id: string;
+        title: string;
+        synced_at?: string | null;
+    };
+};
+
+function workflowSkillSummary(
+    workflowId: string,
+    workflow: WorkflowStore extends Map<string, infer T> ? T : never,
+): ChatSkillSummary | null {
+    if (!workflow.case_skill_slug) return null;
+    return {
+        slug: workflow.case_skill_slug,
+        name: workflow.case_skill_name ?? workflow.title,
+        summary: workflow.case_skill_summary ?? null,
+        tags: normalizeSkillTags(workflow.case_skill_tags),
+        score: null,
+        source:
+            workflow.case_skill_source === "custom" ||
+            workflow.case_skill_source === "curated"
+                ? workflow.case_skill_source
+                : null,
+        version:
+            workflow.case_skill_version === undefined ||
+            workflow.case_skill_version === null
+                ? null
+                : String(workflow.case_skill_version),
+        author_name: null,
+        license: null,
+        imported_workflow: {
+            workflow_id: workflowId,
+            title: workflow.title,
+            synced_at: workflow.case_skill_synced_at ?? null,
+        },
+    };
+}
+
+function skillMatchesQuery(skill: ChatSkillSummary, query: string) {
+    if (!query.trim()) return true;
+    const q = query.toLowerCase();
+    return (
+        skill.slug.toLowerCase().includes(q) ||
+        skill.name.toLowerCase().includes(q) ||
+        (skill.summary ?? "").toLowerCase().includes(q) ||
+        skill.tags.some((tag) => tag.toLowerCase().includes(q))
+    );
+}
+
+function importedCaseSkillSummaries(
+    workflowStore: WorkflowStore | undefined,
+    query: string,
+): ChatSkillSummary[] {
+    if (!workflowStore) return [];
+    return Array.from(workflowStore.entries())
+        .map(([id, workflow]) => workflowSkillSummary(id, workflow))
+        .filter((skill): skill is ChatSkillSummary => !!skill)
+        .filter((skill) => skillMatchesQuery(skill, query));
+}
+
+function importedWorkflowForSkill(
+    workflowStore: WorkflowStore | undefined,
+    slug: string,
+): ChatSkillSummary["imported_workflow"] | undefined {
+    return importedCaseSkillSummaries(workflowStore, "").find(
+        (skill) => skill.slug === slug,
+    )?.imported_workflow;
+}
+
+function mergeSkillSummaries(...lists: ChatSkillSummary[][]): ChatSkillSummary[] {
+    const bySlug = new Map<string, ChatSkillSummary>();
+    for (const list of lists) {
+        for (const skill of list) {
+            const existing = bySlug.get(skill.slug);
+            bySlug.set(skill.slug, {
+                ...existing,
+                ...skill,
+                imported_workflow:
+                    existing?.imported_workflow ?? skill.imported_workflow,
+                tags: skill.tags.length ? skill.tags : (existing?.tags ?? []),
+                summary: skill.summary ?? existing?.summary ?? null,
+                score: skill.score ?? existing?.score ?? null,
+            });
+        }
+    }
+    return Array.from(bySlug.values());
+}
+
 export type DocEditedResult = {
     filename: string;
     document_id: string;
@@ -1488,7 +1764,7 @@ export async function runToolCalls(
     toolCalls: ToolCall[],
     docStore: DocStore,
     userId: string,
-    db: ReturnType<typeof createServerSupabase>,
+    db: ReturnType<typeof createServerDb>,
     write: (s: string) => void,
     workflowStore?: WorkflowStore,
     tabularStore?: TabularCellStore,
@@ -1533,6 +1809,78 @@ export async function runToolCalls(
             const documentId = docIndex?.[docId]?.document_id;
             if (filename) docsRead.push({ filename, document_id: documentId });
             toolResults.push({ role: "tool", tool_call_id: tc.id, content });
+
+        } else if (tc.function.name === "search_documents") {
+            const query = String(args.query ?? "").trim();
+            const requested = Array.isArray(args.doc_ids)
+                ? (args.doc_ids as unknown[]).map((id) => String(id))
+                : [];
+            const topK =
+                typeof args.top_k === "number"
+                    ? Math.max(1, Math.min(50, Math.floor(args.top_k)))
+                    : 10;
+            const labels = requested.length
+                ? requested.map((id) => resolveDocLabel(id, docStore, docIndex) ?? id)
+                : Object.keys(docIndex ?? {});
+            const documentIds = labels
+                .map((label) => docIndex?.[label]?.document_id)
+                .filter((id): id is string => typeof id === "string");
+
+            write(
+                `data: ${JSON.stringify({
+                    type: "doc_read_start",
+                    filename: requested.length
+                        ? `Searching ${requested.length} document${requested.length === 1 ? "" : "s"}`
+                        : "Searching documents",
+                })}\n\n`,
+            );
+
+            const search = query
+                ? await searchCaseDocuments({
+                      query,
+                      documentIds,
+                      projectId,
+                      topK,
+                      db,
+                  })
+                : { hits: [], searched_object_count: 0 };
+            const labelByDocumentId = new Map<string, string>();
+            for (const [label, info] of Object.entries(docIndex ?? {})) {
+                labelByDocumentId.set(info.document_id, label);
+            }
+            const chunks = search.hits.map((hit) => ({
+                doc_id: labelByDocumentId.get(hit.document_id) ?? null,
+                document_id: hit.document_id,
+                filename: hit.filename,
+                page_start: hit.page_start,
+                page_end: hit.page_end,
+                chunk_index: hit.chunk_index,
+                score: hit.score,
+                preview_text: hit.preview_text,
+                text: hit.text,
+                surrounding_chunks: hit.surrounding_chunks,
+            }));
+            write(
+                `data: ${JSON.stringify({
+                    type: "doc_read",
+                    filename: "Case.dev document search",
+                })}\n\n`,
+            );
+            toolResults.push({
+                role: "tool",
+                tool_call_id: tc.id,
+                content: JSON.stringify({
+                    query,
+                    count: chunks.length,
+                    searched_object_count: search.searched_object_count,
+                    chunks,
+                    note:
+                        chunks.length === 0
+                            ? search.skipped_reason ??
+                              "No Case.dev-indexed matches were found. Use read_document or find_in_document as a fallback."
+                            : undefined,
+                }),
+            });
 
         } else if (tc.function.name === "find_in_document") {
             const rawDocId = args.doc_id as string;
@@ -1607,7 +1955,14 @@ export async function runToolCalls(
 
         } else if (tc.function.name === "list_workflows") {
             const list = workflowStore
-                ? Array.from(workflowStore.entries()).map(([id, w]) => ({ id, title: w.title }))
+                ? Array.from(workflowStore.entries()).map(([id, w]) => ({
+                      id,
+                      title: w.title,
+                      case_skill_slug: w.case_skill_slug ?? null,
+                      case_skill_name: w.case_skill_name ?? null,
+                      case_skill_summary: w.case_skill_summary ?? null,
+                      case_skill_tags: normalizeSkillTags(w.case_skill_tags),
+                  }))
                 : [];
             toolResults.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(list) });
 
@@ -1623,6 +1978,200 @@ export async function runToolCalls(
                 tool_call_id: tc.id,
                 content: wf ? wf.prompt_md : `Workflow '${wfId}' not found.`,
             });
+
+        } else if (tc.function.name === "search_case_skills") {
+            const query = String(args.query ?? "").trim();
+            const source =
+                args.source === "case" ||
+                args.source === "custom" ||
+                args.source === "imported"
+                    ? args.source
+                    : "all";
+            const limit =
+                typeof args.limit === "number"
+                    ? Math.max(1, Math.min(20, Math.floor(args.limit)))
+                    : 10;
+            const imported = source === "case"
+                ? []
+                : importedCaseSkillSummaries(workflowStore, query).filter(
+                      (skill) =>
+                          source !== "custom" || skill.source === "custom",
+                  );
+            const liveSkills: ChatSkillSummary[] = [];
+            const errors: string[] = [];
+
+            if (source !== "imported") {
+                try {
+                    const { client, keySource } = await getCaseSkillsClient(userId, db);
+                    if (source !== "custom" && query.length >= 2) {
+                        const result = await client.searchSkills({
+                            query,
+                            limit,
+                        });
+                        liveSkills.push(
+                            ...((result.results ?? []).map((skill) => ({
+                                ...summarizeSkill(skill),
+                                imported_workflow: importedWorkflowForSkill(
+                                    workflowStore,
+                                    skill.slug,
+                                ),
+                            })) as ChatSkillSummary[]),
+                        );
+                    } else if (source !== "custom" && query.length > 0) {
+                        errors.push(
+                            "Case catalog search requires at least 2 characters; use a more specific query.",
+                        );
+                    }
+
+                    if (source !== "case") {
+                        const custom = await client.listCustomSkills({
+                            limit: Math.max(limit, 20),
+                        });
+                        liveSkills.push(
+                            ...((custom.skills ?? [])
+                                .map((skill) => ({
+                                    ...summarizeSkill(skill),
+                                    imported_workflow: importedWorkflowForSkill(
+                                        workflowStore,
+                                        skill.slug,
+                                    ),
+                                }))
+                                .filter((skill) =>
+                                    skillMatchesQuery(skill, query),
+                                ) as ChatSkillSummary[]),
+                        );
+                    }
+                    toolResults.push({
+                        role: "tool",
+                        tool_call_id: tc.id,
+                        content: JSON.stringify({
+                            query,
+                            source,
+                            key_source: keySource,
+                            count: mergeSkillSummaries(imported, liveSkills).slice(
+                                0,
+                                limit,
+                            ).length,
+                            skills: mergeSkillSummaries(imported, liveSkills).slice(
+                                0,
+                                limit,
+                            ),
+                            notes: errors,
+                        }),
+                    });
+                } catch (err: unknown) {
+                    const fallback = imported.slice(0, limit);
+                    toolResults.push({
+                        role: "tool",
+                        tool_call_id: tc.id,
+                        content: JSON.stringify({
+                            query,
+                            source,
+                            count: fallback.length,
+                            skills: fallback,
+                            error:
+                                (err as Error).message ||
+                                "Failed to search Case.dev skills",
+                            note:
+                                fallback.length > 0
+                                    ? "Returned imported Case-backed workflows only because live Case.dev Skills search was unavailable."
+                                    : "Add a Case.dev API key with Skills access in Account > Models.",
+                        }),
+                    });
+                }
+            } else {
+                const skills = imported.slice(0, limit);
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        query,
+                        source,
+                        count: skills.length,
+                        skills,
+                    }),
+                });
+            }
+
+        } else if (tc.function.name === "read_case_skill") {
+            const slug = String(args.slug ?? "").trim();
+            const imported = importedWorkflowForSkill(workflowStore, slug);
+            const importedWorkflow =
+                imported?.workflow_id && workflowStore?.has(imported.workflow_id)
+                    ? workflowStore.get(imported.workflow_id)
+                    : null;
+
+            if (importedWorkflow) {
+                try {
+                    const { client, keySource } = await getCaseSkillsClient(userId, db);
+                    const skill = await client.readSkill(slug);
+                    toolResults.push({
+                        role: "tool",
+                        tool_call_id: tc.id,
+                        content: JSON.stringify({
+                            key_source: keySource,
+                            skill: serializeSkill(skill),
+                            imported_workflow: imported,
+                            note:
+                                "This skill is already imported as a Mike workflow. Prefer read_workflow with imported_workflow.workflow_id if applying it so Mike workflow overlays are included.",
+                        }),
+                    });
+                } catch (err: unknown) {
+                    toolResults.push({
+                        role: "tool",
+                        tool_call_id: tc.id,
+                        content: JSON.stringify({
+                            skill: {
+                                slug,
+                                name:
+                                    importedWorkflow.case_skill_name ??
+                                    importedWorkflow.title,
+                                summary:
+                                    importedWorkflow.case_skill_summary ?? null,
+                                tags: normalizeSkillTags(
+                                    importedWorkflow.case_skill_tags,
+                                ),
+                                source:
+                                    importedWorkflow.case_skill_source ?? null,
+                                version:
+                                    importedWorkflow.case_skill_version ?? null,
+                                content: importedWorkflow.prompt_md,
+                            },
+                            imported_workflow: imported,
+                            warning:
+                                (err as Error).message ||
+                                "Live Case.dev skill lookup failed; using the imported workflow snapshot.",
+                        }),
+                    });
+                }
+            } else {
+                try {
+                    const { client, keySource } = await getCaseSkillsClient(userId, db);
+                    const skill = await client.readSkill(slug);
+                    toolResults.push({
+                        role: "tool",
+                        tool_call_id: tc.id,
+                        content: JSON.stringify({
+                            key_source: keySource,
+                            skill: serializeSkill(skill),
+                            imported_workflow: null,
+                            note:
+                                "If the user asked to apply this skill, follow skill.content as the instructions for this turn.",
+                        }),
+                    });
+                } catch (err: unknown) {
+                    toolResults.push({
+                        role: "tool",
+                        tool_call_id: tc.id,
+                        content: JSON.stringify({
+                            slug,
+                            error:
+                                (err as Error).message ||
+                                "Failed to read Case.dev skill",
+                        }),
+                    });
+                }
+            }
 
         } else if (tc.function.name === "read_table_cells" && tabularStore) {
             const colIndices = args.col_indices as number[] | undefined;
@@ -1883,9 +2432,9 @@ export async function runToolCalls(
                     const sourcePath =
                         active?.storage_path ?? sourceInfo.storage_path;
                     const sourcePdfPath = active?.pdf_storage_path ?? null;
-                    const raw = await downloadFile(sourcePath);
+                    const raw = await downloadFile(sourcePath, { db });
                     const pdfBytes = sourcePdfPath
-                        ? await downloadFile(sourcePdfPath)
+                        ? await downloadFile(sourcePdfPath, { db })
                         : null;
                     if (!raw) {
                         fail(
@@ -1939,9 +2488,7 @@ export async function runToolCalls(
                             );
                         } else {
                             // Preserve the request order so each row pairs
-                            // with the right filename. Supabase returns
-                            // inserted rows in the same order as the
-                            // payload.
+                            // with the right filename.
                             const newDocs = insertedDocs as {
                                 id: string;
                                 filename: string;
@@ -1953,37 +2500,64 @@ export async function runToolCalls(
 
                             // Parallel uploads: the doc bytes (and PDF
                             // rendition if any) for every new copy.
-                            const uploadJobs: Promise<unknown>[] = [];
-                            const newKeys: string[] = [];
-                            const newPdfKeys: (string | null)[] = [];
-                            for (const d of newDocs) {
+                            const uploadJobs: Promise<void>[] = [];
+                            const newKeys: string[] = new Array(newDocs.length);
+                            const newPdfKeys: (string | null)[] = new Array(newDocs.length).fill(null);
+                            for (let idx = 0; idx < newDocs.length; idx++) {
+                                const d = newDocs[idx];
                                 const key = storageKey(
                                     userId,
                                     d.id,
                                     d.filename,
                                 );
-                                newKeys.push(key);
                                 uploadJobs.push(
-                                    uploadFile(key, raw, contentType),
+                                    uploadFile(key, raw, contentType, {
+                                        db,
+                                        userId,
+                                        projectId,
+                                        documentId: d.id,
+                                        filename: d.filename,
+                                        role: "source",
+                                        autoIndex: true,
+                                    }).then((uri) => {
+                                        newKeys[idx] = uri;
+                                    }),
                                 );
                                 if (pdfBytes) {
-                                    const pdfKey = convertedPdfKey(
-                                        userId,
-                                        d.id,
-                                    );
-                                    newPdfKeys.push(pdfKey);
-                                    uploadJobs.push(
-                                        uploadFile(
-                                            pdfKey,
-                                            pdfBytes,
-                                            "application/pdf",
-                                        ),
-                                    );
-                                } else {
-                                    newPdfKeys.push(null);
+                                    if (sourcePdfPath === sourcePath || sourceInfo.file_type === "pdf") {
+                                        newPdfKeys[idx] = key;
+                                    } else {
+                                        const pdfKey = convertedPdfKey(
+                                            userId,
+                                            d.id,
+                                        );
+                                        uploadJobs.push(
+                                            uploadFile(
+                                                pdfKey,
+                                                pdfBytes,
+                                                "application/pdf",
+                                                {
+                                                    db,
+                                                    userId,
+                                                    projectId,
+                                                    documentId: d.id,
+                                                    filename: `${d.filename.replace(/\.[^/.]+$/, "") || "document"}.pdf`,
+                                                    role: "pdf_rendition",
+                                                    autoIndex: false,
+                                                },
+                                            ).then((uri) => {
+                                                newPdfKeys[idx] = uri;
+                                            }),
+                                        );
+                                    }
                                 }
                             }
                             await Promise.all(uploadJobs);
+                            for (let i = 0; i < newPdfKeys.length; i++) {
+                                if (newPdfKeys[i] && !newPdfKeys[i]?.startsWith("case://")) {
+                                    newPdfKeys[i] = newKeys[i];
+                                }
+                            }
 
                             // Bulk insert N versions in one round-trip.
                             const versionRows = newDocs.map((d, idx) => ({
@@ -2056,6 +2630,34 @@ export async function runToolCalls(
                                     const newKey = newKeys[idx];
                                     const versionId = versionByDocId.get(d.id);
                                     if (!versionId) continue;
+                                    void syncDocumentVersionToCase({
+                                        documentId: d.id,
+                                        versionId,
+                                        userId,
+                                        projectId,
+                                        filename: d.filename,
+                                        contentType,
+                                        bytes: raw,
+                                        db,
+                                    }).catch((err) =>
+                                        console.error("[case-sync] replicated document failed", err),
+                                    );
+                                    const newPdfKey = newPdfKeys[idx];
+                                    if (newPdfKey && newPdfKey !== newKey) {
+                                        void registerCaseStoredObject({
+                                            documentId: d.id,
+                                            versionId,
+                                            userId,
+                                            projectId,
+                                            storageUri: newPdfKey,
+                                            filename: `${d.filename.replace(/\.[^/.]+$/, "") || "document"}.pdf`,
+                                            contentType: "application/pdf",
+                                            role: "pdf_rendition",
+                                            db,
+                                        }).catch((err) =>
+                                            console.error("[case-sync] replicated PDF link failed", err),
+                                        );
+                                    }
                                     while (
                                         existingLabels.has(
                                             `doc-${nextLabelIdx}`,
@@ -2298,7 +2900,7 @@ export async function runLLMStream(params: {
     docStore: DocStore;
     docIndex: DocIndex;
     userId: string;
-    db: ReturnType<typeof createServerSupabase>;
+    db: ReturnType<typeof createServerDb>;
     write: (s: string) => void;
     extraTools?: unknown[];
     workflowStore?: WorkflowStore;
@@ -2315,8 +2917,8 @@ export async function runLLMStream(params: {
 }): Promise<{ fullText: string; events: AssistantEvent[] }> {
     const { apiMessages, docStore, docIndex, userId, db, write, extraTools, workflowStore, tabularStore, buildCitations, model, apiKeys, projectId } = params;
     const activeTools = extraTools?.length
-        ? [...TOOLS, ...WORKFLOW_TOOLS, ...extraTools]
-        : [...TOOLS, ...WORKFLOW_TOOLS];
+        ? [...TOOLS, ...WORKFLOW_TOOLS, ...SKILL_TOOLS, ...extraTools]
+        : [...TOOLS, ...WORKFLOW_TOOLS, ...SKILL_TOOLS];
 
     // Extract system prompt; pass remaining turns to the adapter as
     // plain user/assistant messages.
@@ -2622,7 +3224,7 @@ export function extractAnnotations(
 export async function buildDocContext(
     messages: ChatMessage[],
     userId: string,
-    db: ReturnType<typeof createServerSupabase>,
+    db: ReturnType<typeof createServerDb>,
     chatId?: string | null,
 ): Promise<{ docIndex: DocIndex; docStore: DocStore }> {
     const docIndex: DocIndex = {};
@@ -2712,7 +3314,7 @@ export async function buildDocContext(
 export async function buildProjectDocContext(
     projectId: string,
     _userId: string,
-    db: ReturnType<typeof createServerSupabase>,
+    db: ReturnType<typeof createServerDb>,
 ): Promise<{ docIndex: DocIndex; docStore: DocStore; folderPaths: Map<string, string> }> {
     const docIndex: DocIndex = {};
     const docStore: DocStore = new Map();
@@ -2791,7 +3393,7 @@ export async function buildProjectDocContext(
 export async function buildWorkflowStore(
     userId: string,
     userEmail: string | null | undefined,
-    db: ReturnType<typeof createServerSupabase>,
+    db: ReturnType<typeof createServerDb>,
 ): Promise<WorkflowStore> {
     const { BUILTIN_WORKFLOWS } = await import("./builtinWorkflows");
     const store: WorkflowStore = new Map();
@@ -2802,15 +3404,29 @@ export async function buildWorkflowStore(
         store.set(wf.id, { title: wf.title, prompt_md: wf.prompt_md });
     }
 
+    const workflowSelect =
+        "id, title, prompt_md, case_skill_slug, case_skill_name, case_skill_summary, case_skill_tags, case_skill_source, case_skill_version, case_skill_content_snapshot, case_skill_synced_at";
+
     // Then overlay user-owned assistant workflows.
     const { data: workflows } = await db
         .from("workflows")
-        .select("id, title, prompt_md")
+        .select(workflowSelect)
         .eq("user_id", userId)
         .eq("type", "assistant");
     for (const wf of workflows ?? []) {
-        if (wf.prompt_md) {
-            store.set(wf.id, { title: wf.title, prompt_md: wf.prompt_md });
+        const prompt = composeWorkflowPrompt(wf);
+        if (prompt) {
+            store.set(wf.id, {
+                title: wf.title,
+                prompt_md: prompt,
+                case_skill_slug: wf.case_skill_slug,
+                case_skill_name: wf.case_skill_name,
+                case_skill_summary: wf.case_skill_summary,
+                case_skill_tags: wf.case_skill_tags,
+                case_skill_source: wf.case_skill_source,
+                case_skill_version: wf.case_skill_version,
+                case_skill_synced_at: wf.case_skill_synced_at,
+            });
         }
     }
 
@@ -2820,16 +3436,33 @@ export async function buildWorkflowStore(
             .from("workflow_shares")
             .select("workflow_id")
             .eq("shared_with_email", normalizedUserEmail);
-        const sharedIds = [...new Set((shares ?? []).map((share) => share.workflow_id))];
+        const sharedIds = [
+            ...new Set(
+                ((shares ?? []) as { workflow_id: string }[]).map(
+                    (share) => share.workflow_id,
+                ),
+            ),
+        ];
         if (sharedIds.length > 0) {
             const { data: sharedWorkflows } = await db
                 .from("workflows")
-                .select("id, title, prompt_md")
+                .select(workflowSelect)
                 .in("id", sharedIds)
                 .eq("type", "assistant");
             for (const wf of sharedWorkflows ?? []) {
-                if (wf.prompt_md) {
-                    store.set(wf.id, { title: wf.title, prompt_md: wf.prompt_md });
+                const prompt = composeWorkflowPrompt(wf);
+                if (prompt) {
+                    store.set(wf.id, {
+                        title: wf.title,
+                        prompt_md: prompt,
+                        case_skill_slug: wf.case_skill_slug,
+                        case_skill_name: wf.case_skill_name,
+                        case_skill_summary: wf.case_skill_summary,
+                        case_skill_tags: wf.case_skill_tags,
+                        case_skill_source: wf.case_skill_source,
+                        case_skill_version: wf.case_skill_version,
+                        case_skill_synced_at: wf.case_skill_synced_at,
+                    });
                 }
             }
         }

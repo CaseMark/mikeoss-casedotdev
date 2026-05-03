@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabase";
+import { authClient } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import Link from "next/link";
@@ -48,43 +48,46 @@ export default function SignupPage() {
         }
 
         try {
-            const { data, error } = await supabase.auth.signUp({
+            const { error } = await authClient.signUp.email({
                 email,
                 password,
+                name: name.trim() || email,
             });
 
             if (error) throw error;
 
-            if (data.session) {
-                const trimmedName = name.trim();
-                const trimmedOrg = organisation.trim();
-                if (trimmedName || trimmedOrg) {
-                    // The handle_new_user DB trigger creates the
-                    // user_profiles row synchronously on auth.users insert,
-                    // so we UPDATE rather than upsert — RLS permits update
-                    // of the user's own row but blocks self-INSERT.
-                    const { error: profileError } = await supabase
-                        .from("user_profiles")
-                        .update({
-                            ...(trimmedName && { display_name: trimmedName }),
-                            ...(trimmedOrg && { organisation: trimmedOrg }),
-                            updated_at: new Date().toISOString(),
-                        })
-                        .eq("user_id", data.session.user.id);
-                    if (profileError) {
-                        console.error(
-                            "[signup] failed to persist profile fields",
-                            profileError,
-                        );
-                    }
+            const trimmedName = name.trim();
+            const trimmedOrg = organisation.trim();
+            if (trimmedName || trimmedOrg) {
+                const apiBase =
+                    process.env.NEXT_PUBLIC_API_BASE_URL ??
+                    "http://localhost:3001";
+                const profileResp = await fetch(`${apiBase}/user/profile`, {
+                    method: "PATCH",
+                    credentials: "include",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        ...(trimmedName && { display_name: trimmedName }),
+                        ...(trimmedOrg && { organisation: trimmedOrg }),
+                    }),
+                });
+                if (!profileResp.ok) {
+                    console.error(
+                        "[signup] failed to persist profile fields",
+                        await profileResp.text(),
+                    );
                 }
             }
             setSuccess(true);
             setTimeout(() => {
                 router.push("/assistant");
             }, 2000);
-        } catch (error: any) {
-            setError(error.message || "An error occurred during signup");
+        } catch (error: unknown) {
+            setError(
+                error instanceof Error
+                    ? error.message
+                    : "An error occurred during signup",
+            );
         } finally {
             setLoading(false);
         }

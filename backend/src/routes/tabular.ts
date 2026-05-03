@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
-import { createServerSupabase } from "../lib/supabase";
+import { createServerDb } from "../lib/db";
 import { downloadFile } from "../lib/storage";
 import { loadActiveVersion } from "../lib/documentVersions";
 import { normalizeDocxZipPaths } from "../lib/convert";
@@ -12,6 +12,7 @@ import {
 } from "../lib/chatTools";
 import { completeText, streamChatWithTools } from "../lib/llm";
 import { getUserApiKeys, getUserModelSettings } from "../lib/userSettings";
+import { getCaseTextForDocument } from "../lib/caseSync";
 import {
     checkProjectAccess,
     ensureReviewAccess,
@@ -49,7 +50,7 @@ export const tabularRouter = Router();
 tabularRouter.get("/", requireAuth, async (req, res) => {
     const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
-    const db = createServerSupabase();
+    const db = createServerDb();
 
     // Optional ?project_id= scopes results to a single project. Project-page
     // callers pass it; the global tabular-reviews page omits it. We still
@@ -181,7 +182,7 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
             project_id?: string;
         };
 
-    const db = createServerSupabase();
+    const db = createServerDb();
     if (project_id) {
         const access = await checkProjectAccess(
             project_id,
@@ -297,7 +298,7 @@ tabularRouter.get("/:reviewId", requireAuth, async (req, res) => {
     const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
     const { reviewId } = req.params;
-    const db = createServerSupabase();
+    const db = createServerDb();
 
     const { data: review, error } = await db
         .from("tabular_reviews")
@@ -314,7 +315,12 @@ tabularRouter.get("/:reviewId", requireAuth, async (req, res) => {
         .from("tabular_cells")
         .select("*")
         .eq("review_id", reviewId);
-    const docIds = [...new Set((cells ?? []).map((c) => c.document_id))];
+    const typedCells = (cells ?? []) as {
+        document_id: string;
+        column_index: number;
+        content: unknown;
+    }[];
+    const docIds = [...new Set(typedCells.map((c) => c.document_id))];
     const docsResult =
         docIds.length > 0
             ? await db.from("documents").select("*").in("id", docIds)
@@ -328,7 +334,7 @@ tabularRouter.get("/:reviewId", requireAuth, async (req, res) => {
 
     res.json({
         review: { ...review, is_owner: access.isOwner },
-        cells: (cells ?? []).map((cell) => ({
+        cells: typedCells.map((cell) => ({
             ...cell,
             content: parseCellContent(cell.content),
         })),
@@ -344,7 +350,7 @@ tabularRouter.get("/:reviewId/people", requireAuth, async (req, res) => {
     const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
     const { reviewId } = req.params;
-    const db = createServerSupabase();
+    const db = createServerDb();
 
     const { data: review } = await db
         .from("tabular_reviews")
@@ -445,7 +451,7 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
     }
     updates.updated_at = new Date().toISOString();
 
-    const db = createServerSupabase();
+    const db = createServerDb();
     const { data: existingReview, error: reviewError } = await db
         .from("tabular_reviews")
         .select("*")
@@ -488,8 +494,12 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
             .from("tabular_cells")
             .select("document_id,column_index")
             .eq("review_id", reviewId);
+        const typedExistingCells = (existingCells ?? []) as {
+            document_id: string;
+            column_index: number;
+        }[];
         const existingKeys = new Set(
-            (existingCells ?? []).map(
+            typedExistingCells.map(
                 (cell) => `${cell.document_id}:${cell.column_index}`,
             ),
         );
@@ -499,7 +509,7 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
         if (Array.isArray(req.body.document_ids)) {
             // document_ids is the new source of truth — delete removed docs' cells
             const newDocIds = req.body.document_ids as string[];
-            const existingDocIds = (existingCells ?? []).map(
+            const existingDocIds = typedExistingCells.map(
                 (cell) => cell.document_id,
             );
             const removedDocIds = existingDocIds.filter(
@@ -523,7 +533,7 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
             // No document change — derive from existing cells
             documentIds = [
                 ...new Set(
-                    (existingCells ?? []).map((cell) => cell.document_id),
+                    typedExistingCells.map((cell) => cell.document_id),
                 ),
             ];
             if (documentIds.length === 0 && existingReview.project_id) {
@@ -531,7 +541,9 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
                     .from("documents")
                     .select("id")
                     .eq("project_id", existingReview.project_id);
-                documentIds = (projectDocs ?? []).map((doc) => doc.id);
+                documentIds = ((projectDocs ?? []) as { id: string }[]).map(
+                    (doc) => doc.id,
+                );
             }
         }
 
@@ -570,7 +582,7 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
 tabularRouter.delete("/:reviewId", requireAuth, async (req, res) => {
     const userId = res.locals.userId as string;
     const { reviewId } = req.params;
-    const db = createServerSupabase();
+    const db = createServerDb();
     const { error } = await db
         .from("tabular_reviews")
         .delete()
@@ -594,7 +606,7 @@ tabularRouter.post("/:reviewId/clear-cells", requireAuth, async (req, res) => {
             .status(400)
             .json({ detail: "document_ids is required" });
 
-    const db = createServerSupabase();
+    const db = createServerDb();
     const { data: review, error: reviewError } = await db
         .from("tabular_reviews")
         .select("id, user_id, project_id")
@@ -633,7 +645,7 @@ tabularRouter.post(
                 .status(400)
                 .json({ detail: "document_id and column_index are required" });
 
-        const db = createServerSupabase();
+        const db = createServerDb();
         const { data: review, error: reviewError } = await db
             .from("tabular_reviews")
             .select("*")
@@ -673,23 +685,12 @@ tabularRouter.post(
             .eq("document_id", document_id)
             .eq("column_index", column_index);
 
-        let markdown = "";
-        if (docActive) {
-            const buf = await downloadFile(docActive.storage_path);
-            if (buf) {
-                try {
-                    markdown =
-                        (doc.file_type as string) === "pdf"
-                            ? await extractPdfMarkdown(buf)
-                            : await extractDocxMarkdown(buf);
-                } catch (err) {
-                    console.error(
-                        `[regenerate-cell] extraction error doc=${document_id}`,
-                        err,
-                    );
-                }
-            }
-        }
+        const markdown = await readTabularDocumentText({
+            documentId: document_id,
+            versionId: docActive?.id ?? null,
+            fileType: doc.file_type as string,
+            db,
+        });
 
         const { tabular_model, api_keys } = await getUserModelSettings(
             userId,
@@ -731,7 +732,7 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
     const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
     const { reviewId } = req.params;
-    const db = createServerSupabase();
+    const db = createServerDb();
 
     const { data: review, error: reviewError } = await db
         .from("tabular_reviews")
@@ -762,7 +763,13 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
     for (const cell of cells ?? [])
         cellMap.set(`${cell.document_id}:${cell.column_index}`, cell);
 
-    const docIds = [...new Set((cells ?? []).map((c) => c.document_id))];
+    const docIds = [
+        ...new Set(
+            ((cells ?? []) as { document_id: string }[]).map(
+                (c) => c.document_id,
+            ),
+        ),
+    ];
     let docs: Record<string, unknown>[] = [];
     if (docIds.length > 0) {
         const { data } = await db
@@ -794,25 +801,13 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
             docs.map(async (doc) => {
                 const docId = doc.id as string;
                 const filename = doc.filename as string;
-                let markdown = "";
-
                 const active = await loadActiveVersion(docId, db);
-                if (active) {
-                    const buf = await downloadFile(active.storage_path);
-                    if (buf) {
-                        try {
-                            markdown =
-                                (doc.file_type as string) === "pdf"
-                                    ? await extractPdfMarkdown(buf)
-                                    : await extractDocxMarkdown(buf);
-                        } catch (err) {
-                            console.error(
-                                `[tabular/generate] extraction error doc=${docId}`,
-                                err,
-                            );
-                        }
-                    }
-                }
+                const markdown = await readTabularDocumentText({
+                    documentId: docId,
+                    versionId: active?.id ?? null,
+                    fileType: doc.file_type as string,
+                    db,
+                });
 
                 // Filter to only columns that need processing
                 const columnsToProcess = columns.filter((col) => {
@@ -911,7 +906,7 @@ tabularRouter.get("/:reviewId/chats", requireAuth, async (req, res) => {
     const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
     const { reviewId } = req.params;
-    const db = createServerSupabase();
+    const db = createServerDb();
 
     // Verify access (owner or shared-project member).
     const { data: review, error } = await db
@@ -943,7 +938,7 @@ tabularRouter.delete(
     async (req, res) => {
         const userId = res.locals.userId as string;
         const { chatId } = req.params;
-        const db = createServerSupabase();
+        const db = createServerDb();
         // Owner-only delete — sibling collaborators shouldn't be able to wipe
         // each other's threads.
         const { error } = await db
@@ -964,7 +959,7 @@ tabularRouter.get(
         const userId = res.locals.userId as string;
         const userEmail = res.locals.userEmail as string | undefined;
         const { reviewId, chatId } = req.params;
-        const db = createServerSupabase();
+        const db = createServerDb();
 
         const { data: review } = await db
             .from("tabular_reviews")
@@ -1120,7 +1115,7 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
             .json({ detail: "messages must include a user message" });
     }
 
-    const db = createServerSupabase();
+    const db = createServerDb();
     const { data: review, error } = await db
         .from("tabular_reviews")
         .select("*")
@@ -1586,6 +1581,39 @@ Rules:
 
     if (contentBuffer.trim()) pending.push(processLine(contentBuffer));
     await Promise.all(pending);
+}
+
+async function readTabularDocumentText(params: {
+    documentId: string;
+    versionId?: string | null;
+    fileType: string;
+    db: ReturnType<typeof createServerDb>;
+}): Promise<string> {
+    const caseText = await getCaseTextForDocument({
+        documentId: params.documentId,
+        versionId: params.versionId ?? null,
+        db: params.db,
+    });
+    if (caseText) return caseText;
+
+    const active = params.versionId
+        ? await loadActiveVersion(params.documentId, params.db, params.versionId)
+        : await loadActiveVersion(params.documentId, params.db);
+    if (!active) return "";
+
+    const buf = await downloadFile(active.storage_path, { db: params.db });
+    if (!buf) return "";
+    try {
+        return params.fileType === "pdf"
+            ? await extractPdfMarkdown(buf)
+            : await extractDocxMarkdown(buf);
+    } catch (err) {
+        console.error(
+            `[tabular] extraction error doc=${params.documentId}`,
+            err,
+        );
+        return "";
+    }
 }
 
 async function extractPdfMarkdown(buf: ArrayBuffer): Promise<string> {
