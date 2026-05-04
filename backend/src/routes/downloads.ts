@@ -7,6 +7,8 @@ import { ensureDocAccess } from "../lib/access";
 import { isDemoBudgetError } from "../lib/demoUsage";
 
 export const downloadsRouter = Router();
+const DEMO_BUDGET_DETAIL =
+    "This account has reached its demo credit limit. Add your own Case.dev key in Account > Models or ask the demo operator to reset your budget.";
 
 function contentTypeFor(filename: string): string {
     const lower = filename.toLowerCase();
@@ -64,15 +66,14 @@ downloadsRouter.get("/:token", requireAuth, async (req, res) => {
     } catch (err) {
         if (isDemoBudgetError(err)) {
             return void res.status(402).json({
-                detail:
-                    err instanceof Error
-                        ? err.message
-                        : "Demo budget exhausted for this user.",
+                detail: DEMO_BUDGET_DETAIL,
                 code: "demo_budget_exceeded",
             });
         }
+        console.error("[downloads] storage read failed", err);
         return void res.status(500).json({
-            detail: err instanceof Error ? err.message : String(err),
+            detail: "File unavailable.",
+            code: "file_unavailable",
         });
     }
     if (!raw)

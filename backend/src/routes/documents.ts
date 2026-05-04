@@ -43,7 +43,8 @@ function sendDemoBudgetError(
 ): boolean {
   if (!isDemoBudgetError(err)) return false;
   res.status(402).json({
-    detail: errorDetail(err),
+    detail:
+      "This account has reached its demo credit limit. Add your own Case.dev key in Account > Models or ask the demo operator to reset your budget.",
     code: "demo_budget_exceeded",
   });
   return true;
@@ -259,7 +260,11 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
     raw = await downloadFile(servePath, { db });
   } catch (err) {
     if (sendDemoBudgetError(res, err)) return;
-    return void res.status(500).json({ detail: errorDetail(err) });
+    console.error("[documents/display] storage read failed", err);
+    return void res.status(500).json({
+      detail: "Document unavailable.",
+      code: "document_unavailable",
+    });
   }
   if (!raw)
     return void res
