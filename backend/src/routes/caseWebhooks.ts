@@ -3,14 +3,36 @@ import { createServerDb } from "../lib/db";
 
 export const caseWebhooksRouter = Router();
 
-function webhookAllowed(req: import("express").Request) {
+function unsignedWebhooksAllowed() {
+    const configured = process.env.CASE_WEBHOOK_ALLOW_UNSIGNED?.trim().toLowerCase();
+    return (
+        process.env.NODE_ENV !== "production" &&
+        (configured === "true" || configured === "1" || configured === "yes")
+    );
+}
+
+function webhookAuth(req: import("express").Request): {
+    allowed: boolean;
+    status: number;
+    detail: string;
+} {
     const secret = process.env.CASE_WEBHOOK_SHARED_SECRET?.trim();
-    if (!secret) return true;
+    if (!secret) {
+        return unsignedWebhooksAllowed()
+            ? { allowed: true, status: 200, detail: "Unsigned local webhook allowed" }
+            : {
+                  allowed: false,
+                  status: 503,
+                  detail: "CASE_WEBHOOK_SHARED_SECRET is required for Case.dev webhooks",
+              };
+    }
     const received =
         req.header("x-case-webhook-secret") ??
         req.header("x-mike-webhook-secret") ??
         "";
-    return received === secret;
+    return received === secret
+        ? { allowed: true, status: 200, detail: "Authorized" }
+        : { allowed: false, status: 401, detail: "Unauthorized" };
 }
 
 function eventObjectId(body: Record<string, unknown>) {
@@ -26,7 +48,8 @@ function eventObjectId(body: Record<string, unknown>) {
 }
 
 caseWebhooksRouter.post("/vault", async (req, res) => {
-    if (!webhookAllowed(req)) return void res.status(401).json({ detail: "Unauthorized" });
+    const auth = webhookAuth(req);
+    if (!auth.allowed) return void res.status(auth.status).json({ detail: auth.detail });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const vaultId =
         (typeof body.vaultId === "string" && body.vaultId) ||
@@ -71,7 +94,8 @@ caseWebhooksRouter.post("/vault", async (req, res) => {
 });
 
 caseWebhooksRouter.post("/matters", async (req, res) => {
-    if (!webhookAllowed(req)) return void res.status(401).json({ detail: "Unauthorized" });
+    const auth = webhookAuth(req);
+    if (!auth.allowed) return void res.status(auth.status).json({ detail: auth.detail });
     const body = (req.body ?? {}) as Record<string, unknown>;
     const matterId =
         (typeof body.matterId === "string" && body.matterId) ||

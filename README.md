@@ -75,6 +75,8 @@ Open `http://localhost:3000`.
 - Better Auth tables from `backend/migrations/000_one_shot_schema.sql`
 - Case.dev API key for LLM routing, model catalog, Skills, and Vault storage/search
 - LibreOffice for DOC/DOCX to PDF conversion
+- Strong backend secrets for Better Auth, download-token signing, Case key
+  encryption, and Case.dev webhook verification
 
 ## Checks
 
@@ -84,7 +86,9 @@ npm run build --prefix frontend
 (cd frontend && npx tsc --noEmit)
 ```
 
-Legacy R2 rows from pre-Case deployments can be copied into Case Vault with:
+Legacy R2 rows from pre-Case deployments can be copied into Case Vault with the
+legacy migration helper. It exists for old CaseMark data only; always run the
+dry run first and prefer fresh Case Vault storage for new deployments:
 
 ```bash
 npm --prefix backend run migrate:r2-to-case -- --dry-run
@@ -100,6 +104,11 @@ grounding.
 Do not commit real `.env`, `.env.local`, API keys, database URLs, session
 secrets, vault IDs, or downloaded client documents. Use GitHub private security
 advisories for vulnerability reports; see `SECURITY.md`.
+
+For production, set `CASE_WEBHOOK_SHARED_SECRET`, `DOWNLOAD_SIGNING_SECRET`,
+`BETTER_AUTH_SECRET`, and `CASE_KEY_ENCRYPTION_SECRET` to non-placeholder values.
+Unsigned Case.dev webhooks are only available when explicitly enabled for local
+development with `CASE_WEBHOOK_ALLOW_UNSIGNED=true`.
 
 ## License
 

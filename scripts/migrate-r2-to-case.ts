@@ -8,6 +8,9 @@ import {
 } from "../backend/src/lib/caseSync";
 import { isCaseStorageUri, uploadFile } from "../backend/src/lib/storage";
 
+// Legacy CaseMark migration helper for pre-Case Vault rows only. Prefer
+// `--dry-run` first; new deployments should not configure or depend on R2.
+
 type VersionRow = {
   id: string;
   document_id: string;

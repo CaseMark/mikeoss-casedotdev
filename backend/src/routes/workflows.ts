@@ -220,8 +220,7 @@ workflowsRouter.get("/", requireAuth, async (req, res) => {
         : { data: [] };
       const typedProfiles = (profiles ?? []) as UserProfileRow[];
 
-      // Fetch sharer emails via admin client
-      const { data: authData } = await db.auth.admin.listUsers({ perPage: 1000 });
+      const { data: authData } = await db.auth.admin.listUsersByIds(sharerIds);
       const authUsers = authData?.users ?? [];
 
       sharedWorkflows = (wfs as WorkflowRecord[]).map((wf) => {

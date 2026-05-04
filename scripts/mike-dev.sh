@@ -279,6 +279,14 @@ CASE_DATABASE_BRANCH=main
 BETTER_AUTH_URL=http://localhost:${BACKEND_PORT}
 BETTER_AUTH_SECRET=${case_secret}
 BETTER_AUTH_TRUSTED_ORIGINS=http://localhost:${FRONTEND_PORT}
+DOWNLOAD_SIGNING_SECRET=${case_secret}
+
+CASE_WEBHOOK_SHARED_SECRET=${case_secret}
+CASE_WEBHOOK_ALLOW_UNSIGNED=false
+
+MIKE_AUTH_RATE_LIMIT_WINDOW_MS=900000
+MIKE_AUTH_RATE_LIMIT_MAX=30
+MIKE_AUTH_CREDENTIAL_RATE_LIMIT_MAX=10
 
 CASE_API_BASE_URL=https://api.case.dev
 CASE_KEY_ENCRYPTION_SECRET=${case_secret}
@@ -291,6 +299,8 @@ GEMINI_API_KEY=your-gemini-key
 ANTHROPIC_API_KEY=your-anthropic-key
 OPENROUTER_API_KEY=your-openrouter-key
 RESEND_API_KEY=your-resend-key
+
+MIKE_LLM_DEBUG_STREAMS=false
 EOF
 
   echo "Created backend env file: $env_file"
@@ -317,8 +327,13 @@ print_env_guidance() {
 Local env checklist
   backend/.env:
     Required for auth/database: DATABASE_URL, BETTER_AUTH_SECRET
+    Recommended for persistent downloads: DOWNLOAD_SIGNING_SECRET
     Optional Case DB metadata: CASE_DATABASE_PROJECT_ID, CASE_DATABASE_BRANCH
     Required for Case key encryption: CASE_KEY_ENCRYPTION_SECRET
+    Required for Case webhooks: CASE_WEBHOOK_SHARED_SECRET
+      (local polling still works when no Case webhook is configured)
+    Auth rate limiting: MIKE_AUTH_RATE_LIMIT_WINDOW_MS,
+      MIKE_AUTH_RATE_LIMIT_MAX, MIKE_AUTH_CREDENTIAL_RATE_LIMIT_MAX
     Case API keys are normally saved per user in /account/models and power
     LLM routing plus canonical Case Vault document storage.
     Optional only for legacy migration: R2_ENDPOINT_URL, R2_ACCESS_KEY_ID,

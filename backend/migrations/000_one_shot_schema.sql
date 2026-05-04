@@ -72,8 +72,6 @@ create table if not exists public.user_profiles (
   message_credits_used integer not null default 0,
   credits_reset_date timestamptz not null default (now() + interval '30 days'),
   tabular_model text not null default 'casemark/core-large',
-  claude_api_key text,
-  gemini_api_key text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

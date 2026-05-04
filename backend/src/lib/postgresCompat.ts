@@ -474,6 +474,52 @@ class PostgresCompatAuthAdmin {
     }
   }
 
+  async listUsersByEmails(emails: string[]): Promise<QueryResponse<{ users: any[] }>> {
+    const normalized = [
+      ...new Set(
+        emails
+          .map((email) => email.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    ];
+    if (!normalized.length) return { data: { users: [] }, error: null };
+    try {
+      const { rows } = await this.pool.query(
+        `select id, email, name, "emailVerified", image, "createdAt", "updatedAt"
+         from "user"
+         where lower(email) = any($1::text[])
+         order by "createdAt" desc`,
+        [normalized],
+      );
+      return { data: { users: rows }, error: null };
+    } catch (err) {
+      return {
+        data: null,
+        error: { message: err instanceof Error ? err.message : String(err) },
+      };
+    }
+  }
+
+  async listUsersByIds(ids: string[]): Promise<QueryResponse<{ users: any[] }>> {
+    const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+    if (!unique.length) return { data: { users: [] }, error: null };
+    try {
+      const { rows } = await this.pool.query(
+        `select id, email, name, "emailVerified", image, "createdAt", "updatedAt"
+         from "user"
+         where id = any($1::text[])
+         order by "createdAt" desc`,
+        [unique],
+      );
+      return { data: { users: rows }, error: null };
+    } catch (err) {
+      return {
+        data: null,
+        error: { message: err instanceof Error ? err.message : String(err) },
+      };
+    }
+  }
+
   async deleteUser(userId: string): Promise<QueryResponse<null>> {
     try {
       await this.pool.query(`delete from "user" where id = $1`, [userId]);

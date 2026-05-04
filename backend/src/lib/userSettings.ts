@@ -20,7 +20,7 @@ export async function getUserModelSettings(
     const client = db ?? createServerDb();
     const { data } = await client
         .from("user_profiles")
-        .select("tabular_model, claude_api_key, gemini_api_key")
+        .select("tabular_model")
         .eq("user_id", userId)
         .single();
 
@@ -41,8 +41,8 @@ export async function getUserModelSettings(
                       operation: "llm.request",
                   }
                 : null,
-        claude: data?.claude_api_key ?? null,
-        gemini: data?.gemini_api_key ?? null,
+        claude: null,
+        gemini: null,
     };
 
     return {
@@ -57,11 +57,6 @@ export async function getUserApiKeys(
     db?: ReturnType<typeof createServerDb>,
 ): Promise<UserApiKeys> {
     const client = db ?? createServerDb();
-    const { data } = await client
-        .from("user_profiles")
-        .select("claude_api_key, gemini_api_key")
-        .eq("user_id", userId)
-        .single();
     const caseKey = await getEffectiveCaseApiKey(userId, client).catch((err) => {
         console.error("[userSettings] unable to load Case API key", err);
         return null;
@@ -79,7 +74,7 @@ export async function getUserApiKeys(
                       operation: "llm.request",
                   }
                 : null,
-        claude: data?.claude_api_key ?? null,
-        gemini: data?.gemini_api_key ?? null,
+        claude: null,
+        gemini: null,
     };
 }

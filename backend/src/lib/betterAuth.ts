@@ -55,7 +55,7 @@ export async function getBetterAuth(): Promise<BetterAuthInstance> {
         database: getPostgresPool(),
         emailAndPassword: {
           enabled: true,
-          minPasswordLength: 6,
+          minPasswordLength: 8,
           autoSignIn: true,
         },
         advanced: {

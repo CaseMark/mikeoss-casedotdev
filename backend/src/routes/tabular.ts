@@ -370,12 +370,15 @@ tabularRouter.get("/:reviewId/people", requireAuth, async (req, res) => {
             : []
     ).map((e) => (e ?? "").toLowerCase());
 
-    // Same pattern as /projects/:id/people: walk auth.users to map emails
-    // to user_ids, then pull display_names from user_profiles by user_id.
-    const { data: usersData } = await db.auth.admin.listUsers({
-        perPage: 1000,
-    });
-    const allUsers = usersData?.users ?? [];
+    const [{ data: sharedUsersData }, { data: ownerUsersData }] =
+        await Promise.all([
+            db.auth.admin.listUsersByEmails(sharedWith),
+            db.auth.admin.listUsersByIds([review.user_id as string]),
+        ]);
+    const allUsers = [
+        ...(sharedUsersData?.users ?? []),
+        ...(ownerUsersData?.users ?? []),
+    ];
     const userByEmail = new Map<string, { id: string; email: string }>();
     const userById = new Map<string, { id: string; email: string }>();
     for (const u of allUsers) {

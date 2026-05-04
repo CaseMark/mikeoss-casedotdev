@@ -13,6 +13,19 @@ import { getDemoUsageStatus } from "../lib/demoUsage";
 
 export const userRouter = Router();
 
+const SAFE_PROFILE_SELECT = [
+  "id",
+  "user_id",
+  "display_name",
+  "organisation",
+  "tier",
+  "message_credits_used",
+  "credits_reset_date",
+  "tabular_model",
+  "created_at",
+  "updated_at",
+].join(", ");
+
 type UserProfilePatch = {
   display_name?: unknown;
   organisation?: unknown;
@@ -53,6 +66,14 @@ function profilePatch(body: UserProfilePatch) {
   return patch;
 }
 
+function selectSafeProfile(db: ReturnType<typeof createServerDb>, userId: string) {
+  return db
+    .from("user_profiles")
+    .select(SAFE_PROFILE_SELECT)
+    .eq("user_id", userId)
+    .single();
+}
+
 // POST /user/profile
 userRouter.post("/profile", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
@@ -72,7 +93,7 @@ userRouter.get("/profile", requireAuth, async (_req, res) => {
   }
   const { data, error } = await db
     .from("user_profiles")
-    .select("*")
+    .select(SAFE_PROFILE_SELECT)
     .eq("user_id", userId)
     .single();
   if (error) return void res.status(500).json({ detail: error.message });
@@ -90,11 +111,7 @@ userRouter.patch("/profile", requireAuth, async (req, res) => {
 
   const patch = profilePatch(req.body ?? {});
   if (!Object.keys(patch).length) {
-    const { data, error } = await db
-      .from("user_profiles")
-      .select("*")
-      .eq("user_id", userId)
-      .single();
+    const { data, error } = await selectSafeProfile(db, userId);
     if (error) return void res.status(500).json({ detail: error.message });
     return void res.json(data);
   }
@@ -103,7 +120,7 @@ userRouter.patch("/profile", requireAuth, async (req, res) => {
     .from("user_profiles")
     .update(patch)
     .eq("user_id", userId)
-    .select("*")
+    .select(SAFE_PROFILE_SELECT)
     .single();
   if (error) return void res.status(500).json({ detail: error.message });
   res.json(data);

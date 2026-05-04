@@ -9,13 +9,40 @@ import crypto from "crypto";
  * expiry or exposing Case Vault credentials to the browser.
  */
 
+const DEV_SECRET = "dev-secret";
+const PLACEHOLDER_SECRETS = new Set([
+    DEV_SECRET,
+    "generate-a-32-byte-random-secret",
+    "changeme",
+    "REPLACE_ME",
+]);
+
+function selectedSecret(): { value: string; source: string } {
+    const candidates = [
+        ["DOWNLOAD_SIGNING_SECRET", process.env.DOWNLOAD_SIGNING_SECRET],
+        ["BETTER_AUTH_SECRET", process.env.BETTER_AUTH_SECRET],
+        ["CASE_KEY_ENCRYPTION_SECRET", process.env.CASE_KEY_ENCRYPTION_SECRET],
+    ] as const;
+    for (const [source, raw] of candidates) {
+        const value = raw?.trim();
+        if (value) return { source, value };
+    }
+    return { source: "development fallback", value: DEV_SECRET };
+}
+
+export function assertDownloadSigningSecret() {
+    const { source, value } = selectedSecret();
+    if (process.env.NODE_ENV !== "production") return;
+    if (PLACEHOLDER_SECRETS.has(value)) {
+        throw new Error(
+            `${source} must be set to a strong secret before using download tokens in production.`,
+        );
+    }
+}
+
 function getSecret(): string {
-    return (
-        process.env.DOWNLOAD_SIGNING_SECRET ??
-        process.env.BETTER_AUTH_SECRET ??
-        process.env.CASE_KEY_ENCRYPTION_SECRET ??
-        "dev-secret"
-    );
+    assertDownloadSigningSecret();
+    return selectedSecret().value;
 }
 
 function b64urlEncode(buf: Buffer): string {
