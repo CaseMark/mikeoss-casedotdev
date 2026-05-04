@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { AlertCircle, Check, ChevronDown, Eye, EyeOff } from "lucide-react";
+import { AlertCircle, Check, ChevronDown, Eye, EyeOff, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -34,6 +34,7 @@ import type {
 export default function ModelsAndApiKeysPage() {
     const {
         profile,
+        loading,
         updateModelPreference,
         updateCaseApiKey,
         updateProviderApiKey,
@@ -49,6 +50,17 @@ export default function ModelsAndApiKeysPage() {
     const usingServerKey = keySource === "server";
     const usingDemoKey = keySource === "demo";
     const hostedDemo = profile?.demoUsage.enabled ?? false;
+
+    if (loading || !profile) {
+        return (
+            <div className="flex min-h-64 max-w-4xl items-center justify-center">
+                <div className="flex items-center gap-2 text-sm text-gray-500">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading model and API key settings...
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="space-y-8 max-w-4xl">
