@@ -48,21 +48,21 @@ export function demoGlobalBudgetLimitMicros(): number | null {
 
 export function demoEstimateConfig(): DemoEstimateConfig {
   return {
-    llmReserveMicros: usdToMicros(process.env.MIKE_DEMO_LLM_RESERVE_USD, 0.75),
-    llmUnknownMicros: usdToMicros(process.env.MIKE_DEMO_LLM_UNKNOWN_USD, 0.05),
+    llmReserveMicros: usdToMicros(process.env.MIKE_DEMO_LLM_RESERVE_USD, 0.10),
+    llmUnknownMicros: usdToMicros(process.env.MIKE_DEMO_LLM_UNKNOWN_USD, 0),
     vaultUploadBaseMicros: usdToMicros(
       process.env.MIKE_DEMO_VAULT_UPLOAD_BASE_USD,
-      0.05,
+      0,
     ),
     vaultUploadPerMbMicros: usdToMicros(
       process.env.MIKE_DEMO_VAULT_UPLOAD_PER_MB_USD,
-      0.02,
+      0,
     ),
-    legalCallMicros: usdToMicros(process.env.MIKE_DEMO_LEGAL_CALL_USD, 0.25),
-    skillsCallMicros: usdToMicros(process.env.MIKE_DEMO_SKILLS_CALL_USD, 0.01),
-    mattersCallMicros: usdToMicros(process.env.MIKE_DEMO_MATTERS_CALL_USD, 0.01),
-    vaultCallMicros: usdToMicros(process.env.MIKE_DEMO_VAULT_CALL_USD, 0.02),
-    otherCallMicros: usdToMicros(process.env.MIKE_DEMO_OTHER_CALL_USD, 0.01),
+    legalCallMicros: usdToMicros(process.env.MIKE_DEMO_LEGAL_CALL_USD, 0),
+    skillsCallMicros: usdToMicros(process.env.MIKE_DEMO_SKILLS_CALL_USD, 0),
+    mattersCallMicros: usdToMicros(process.env.MIKE_DEMO_MATTERS_CALL_USD, 0),
+    vaultCallMicros: usdToMicros(process.env.MIKE_DEMO_VAULT_CALL_USD, 0),
+    otherCallMicros: usdToMicros(process.env.MIKE_DEMO_OTHER_CALL_USD, 0),
   };
 }
 

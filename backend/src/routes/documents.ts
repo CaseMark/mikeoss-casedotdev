@@ -24,7 +24,7 @@ import {
   loadActiveVersion,
 } from "../lib/documentVersions";
 import { checkProjectAccess, ensureDocAccess } from "../lib/access";
-import { singleFileUpload } from "../lib/upload";
+import { singleFileUpload, UploadTooLargeError } from "../lib/upload";
 import { registerCaseStoredObject, syncDocumentVersionToCase } from "../lib/caseSync";
 import { isDemoBudgetError } from "../lib/demoUsage";
 
@@ -35,6 +35,25 @@ const WORD_CONTENT_TYPE =
 
 function errorDetail(err: unknown) {
   return err instanceof Error ? err.message : String(err);
+}
+
+function sendDemoBudgetError(
+  res: import("express").Response,
+  err: unknown,
+): boolean {
+  if (!isDemoBudgetError(err)) return false;
+  res.status(402).json({
+    detail:
+      "This account has reached its demo credit limit. Add your own Case.dev key in Account > Models or ask the demo operator to reset your budget.",
+    code: "demo_budget_exceeded",
+  });
+  return true;
+}
+
+function requestErrorStatus(err: unknown) {
+  if (isDemoBudgetError(err)) return 402;
+  if (err instanceof UploadTooLargeError) return 413;
+  return 400;
 }
 
 function arrayBufferCopy(bytes: Buffer): ArrayBuffer {
@@ -130,7 +149,7 @@ documentsRouter.post("/direct-upload", requireAuth, async (req, res) => {
   } catch (err) {
     console.error("[direct-upload] create failed", err);
     return void res
-      .status(isDemoBudgetError(err) ? 402 : 400)
+      .status(requestErrorStatus(err))
       .json({
         detail: errorDetail(err),
         ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
@@ -161,7 +180,7 @@ documentsRouter.post(
     } catch (err) {
       console.error("[direct-upload] complete failed", err);
       return void res
-        .status(isDemoBudgetError(err) ? 402 : 400)
+        .status(requestErrorStatus(err))
         .json({
           detail: errorDetail(err),
           ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
@@ -236,7 +255,17 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
     isDocx && active.pdf_storage_path
       ? active.pdf_storage_path
       : active.storage_path;
-  const raw = await downloadFile(servePath, { db });
+  let raw: ArrayBuffer | null;
+  try {
+    raw = await downloadFile(servePath, { db });
+  } catch (err) {
+    if (sendDemoBudgetError(res, err)) return;
+    console.error("[documents/display] storage read failed", err);
+    return void res.status(500).json({
+      detail: "Document unavailable.",
+      code: "document_unavailable",
+    });
+  }
   if (!raw)
     return void res
       .status(404)
@@ -355,12 +384,15 @@ documentsRouter.get("/:documentId/url", requireAuth, async (req, res) => {
     active.display_name,
     active.version_number,
   );
-  const url = await getSignedUrl(
-    active.storage_path,
-    3600,
-    downloadFilename,
-    { db },
-  );
+  let url: string | null;
+  try {
+    url = await getSignedUrl(active.storage_path, 3600, downloadFilename, {
+      db,
+    });
+  } catch (err) {
+    if (sendDemoBudgetError(res, err)) return;
+    return void res.status(500).json({ detail: errorDetail(err) });
+  }
   if (!url)
     return void res.status(503).json({ detail: "Storage not configured" });
 
@@ -402,19 +434,26 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
   if (!active)
     return void res.status(404).json({ detail: "No file available" });
 
-  const url = await getSignedUrl(
-    active.storage_path,
-    3600,
-    resolveDownloadFilename(
-      doc.filename as string,
-      active.display_name,
-      active.version_number,
-    ),
-    { db },
-  );
-  if (!url)
+  let raw: ArrayBuffer | null;
+  try {
+    raw = await downloadFile(active.storage_path, { db });
+  } catch (err) {
+    if (sendDemoBudgetError(res, err)) return;
+    return void res.status(500).json({ detail: errorDetail(err) });
+  }
+  if (!raw)
     return void res.status(404).json({ detail: "Document bytes not available" });
-  res.redirect(302, url);
+  const filename = resolveDownloadFilename(
+    doc.filename as string,
+    active.display_name,
+    active.version_number,
+  );
+  const body = Buffer.from(raw);
+  res.setHeader("Content-Type", WORD_CONTENT_TYPE);
+  res.setHeader("Content-Length", String(body.byteLength));
+  res.setHeader("Content-Disposition", buildContentDisposition("inline", filename));
+  res.setHeader("Cache-Control", "private, no-store");
+  res.send(body);
 });
 
 // Compose a download-friendly filename that carries the edit version
@@ -512,7 +551,7 @@ documentsRouter.post(
     } catch (err) {
       console.error("[versions/direct-upload] create failed", err);
       return void res
-        .status(isDemoBudgetError(err) ? 402 : 400)
+        .status(requestErrorStatus(err))
         .json({
           detail: errorDetail(err),
           ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
@@ -544,7 +583,7 @@ documentsRouter.post(
     } catch (err) {
       console.error("[versions/direct-upload] complete failed", err);
       return void res
-        .status(isDemoBudgetError(err) ? 402 : 400)
+        .status(requestErrorStatus(err))
         .json({
           detail: errorDetail(err),
           ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),

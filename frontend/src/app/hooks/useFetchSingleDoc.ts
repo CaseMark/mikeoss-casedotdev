@@ -13,6 +13,26 @@ export type DocResult =
     | { type: "docx" }
     | null;
 
+async function documentLoadError(response: Response): Promise<Error> {
+    let message = `HTTP ${response.status}`;
+    try {
+        const body = (await response.json()) as {
+            code?: string;
+            detail?: string;
+            error?: string;
+        };
+        if (body.code === "demo_budget_exceeded") {
+            message =
+                "This account has reached its demo credit limit. Add your own Case.dev key in Account > Models or ask the demo operator to reset your budget.";
+        } else {
+            message = body.detail ?? body.error ?? message;
+        }
+    } catch {
+        /* keep HTTP fallback */
+    }
+    return new Error(message);
+}
+
 export function useFetchSingleDoc(
     documentId: string | null | undefined,
     versionId?: string | null,
@@ -50,7 +70,7 @@ export function useFetchSingleDoc(
                         credentials: "include",
                     },
                 );
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                if (!response.ok) throw await documentLoadError(response);
                 if (cancelled) return;
 
                 const contentType =
@@ -65,8 +85,14 @@ export function useFetchSingleDoc(
                     await response.arrayBuffer().catch(() => {});
                     if (!cancelled) setResult({ type: "docx" });
                 }
-            } catch {
-                if (!cancelled) setError("Failed to load document.");
+            } catch (err) {
+                if (!cancelled) {
+                    setError(
+                        err instanceof Error
+                            ? err.message
+                            : "Failed to load document.",
+                    );
+                }
             } finally {
                 if (!cancelled) setLoading(false);
             }

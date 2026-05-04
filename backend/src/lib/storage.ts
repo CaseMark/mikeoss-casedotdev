@@ -10,6 +10,8 @@ import crypto from "crypto";
 import type { createServerDb } from "./db";
 import { CaseClient } from "./caseClient";
 import { caseClientForEffectiveKey, getEffectiveCaseApiKey } from "./caseCredentials";
+import { isDemoBudgetError } from "./demoUsage";
+import { assertUploadSize } from "./upload";
 
 type Db = ReturnType<typeof createServerDb>;
 
@@ -350,6 +352,7 @@ export async function uploadFile(
 ): Promise<string> {
   const contentForUpload = uploadBuffer(content);
   const contentSize = sizeOf(contentForUpload);
+  assertUploadSize(contentSize);
   const contentHash = hashBytes(contentForUpload);
 
   if (isCaseStorageUri(keyOrUri)) {
@@ -429,6 +432,7 @@ export async function createDirectUpload(
   sizeBytes: number,
   context?: StorageContext,
 ): Promise<DirectUploadSession> {
+  assertUploadSize(sizeBytes);
   if (isCaseStorageUri(keyOrUri)) {
     if (!context?.db) {
       throw new Error("Updating a Case Vault object requires storage context.");
@@ -499,6 +503,7 @@ export async function confirmDirectUpload(
     autoIndex?: boolean;
   },
 ): Promise<void> {
+  assertUploadSize(params.sizeBytes);
   const ref = parseCaseStorageUri(storageUri);
   if (!ref) throw new LegacyStorageObjectError(storageUri);
   const { client } = await clientForVault(ref.vaultId, params.db);
@@ -531,6 +536,7 @@ export async function downloadFile(
     const { client } = await clientForVault(ref.vaultId, context.db);
     return await client.downloadVaultObject(ref.vaultId, ref.objectId);
   } catch (err) {
+    if (isDemoBudgetError(err)) throw err;
     console.error("[case-storage] download failed", err);
     return null;
   }
@@ -575,7 +581,8 @@ export async function getSignedUrl(
       expiresIn,
     });
     return resolvedPresignedUrl(presigned);
-  } catch {
+  } catch (err) {
+    if (isDemoBudgetError(err)) throw err;
     return null;
   }
 }

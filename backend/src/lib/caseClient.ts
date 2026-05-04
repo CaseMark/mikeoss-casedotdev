@@ -6,16 +6,27 @@ import type {
 } from "./llm/types";
 import {
     commitDemoUsage,
+    costMicrosFromUsage,
     estimateCaseOperation,
+    estimateLlmUsageCostMicros,
     releaseDemoUsage,
     reserveDemoUsage,
     usageFromResponse,
     type DemoUsageContext,
     type DemoUsageReservation,
+    type UsageFields,
 } from "./demoUsage";
 import { demoEstimateConfig } from "./demoMode";
 
 const DEFAULT_CASE_API_BASE_URL = "https://api.case.dev";
+const MODEL_PRICING_CACHE_MS = 5 * 60 * 1000;
+
+type ModelPricingCacheEntry = {
+    expiresAt: number;
+    pricingByModel: Map<string, Record<string, unknown>>;
+};
+
+const modelPricingCache = new Map<string, ModelPricingCacheEntry>();
 
 export class CaseApiError extends Error {
     status: number;
@@ -401,9 +412,18 @@ export class CaseClient {
                 return undefined as T;
             }
             const parsed = JSON.parse(text) as T;
+            const usage = usageFromResponse(parsed);
+            const model = modelFromJson(json);
+            const actualMicros =
+                estimate.service === "llm" &&
+                estimate.operation.includes("chat") &&
+                costMicrosFromUsage(usage) === null
+                    ? await this.estimateLlmActualMicros(model, usage)
+                    : null;
             await commitDemoUsage(reservation, {
-                model: modelFromJson(json),
-                usage: usageFromResponse(parsed),
+                model,
+                actualMicros,
+                usage,
                 metadata: { status: response.status },
             });
             return parsed;
@@ -1225,6 +1245,56 @@ export class CaseClient {
         }
         return response;
     }
+
+    async estimateLlmActualMicros(
+        model: string | null,
+        usage: UsageFields | null | undefined,
+    ): Promise<number | null> {
+        if (!model || !usage) return null;
+        if (costMicrosFromUsage(usage) !== null) return null;
+        const pricing = await this.modelPricing(model);
+        return estimateLlmUsageCostMicros(usage, pricing);
+    }
+
+    private async modelPricing(
+        model: string,
+    ): Promise<Record<string, unknown> | null> {
+        const cacheKey = `${this.baseUrl}:${this.apiKey}`;
+        const cached = modelPricingCache.get(cacheKey);
+        if (cached && cached.expiresAt > Date.now()) {
+            return cached.pricingByModel.get(model) ?? null;
+        }
+
+        try {
+            const response = await fetch(`${this.baseUrl}/llm/v1/models`, {
+                headers: {
+                    Authorization: `Bearer ${this.apiKey}`,
+                    Accept: "application/json",
+                },
+            });
+            if (!response.ok) return null;
+            const data = (await response.json()) as {
+                data?: CaseModel[];
+                models?: CaseModel[];
+            };
+            const pricingByModel = new Map<string, Record<string, unknown>>();
+            for (const item of data.data ?? data.models ?? []) {
+                if (!item.id || !isRecord(item.pricing)) continue;
+                pricingByModel.set(item.id, item.pricing);
+            }
+            modelPricingCache.set(cacheKey, {
+                expiresAt: Date.now() + MODEL_PRICING_CACHE_MS,
+                pricingByModel,
+            });
+            return pricingByModel.get(model) ?? null;
+        } catch {
+            return null;
+        }
+    }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function requireCaseApiKey(apiKey?: string | null): string {
@@ -1397,8 +1467,13 @@ export async function streamCaseChat(params: {
                     }
                 }
             }
+            const actualMicros = await client.estimateLlmActualMicros(
+                params.model,
+                latestUsage,
+            );
             await commitDemoUsage(reservation, {
                 model: params.model,
+                actualMicros,
                 usage: latestUsage,
                 units: { output_characters: content.length },
                 metadata: { iteration, tool_call_count: toolCalls.size },
