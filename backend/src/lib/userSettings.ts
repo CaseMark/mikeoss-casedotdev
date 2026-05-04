@@ -14,6 +14,16 @@ export type UserModelSettings = {
     api_keys: UserApiKeys;
 };
 
+async function loadProviderKeys(
+    userId: string,
+    client: ReturnType<typeof createServerDb>,
+) {
+    return getEffectiveProviderApiKeys(userId, client).catch((err) => {
+        console.error("[userSettings] unable to load provider API keys", err);
+        return { anthropic: null, gemini: null };
+    });
+}
+
 export async function getUserModelSettings(
     userId: string,
     db?: ReturnType<typeof createServerDb>,
@@ -29,10 +39,7 @@ export async function getUserModelSettings(
         console.error("[userSettings] unable to load Case API key", err);
         return null;
     });
-    const providerKeys = await getEffectiveProviderApiKeys(userId, client).catch((err) => {
-        console.error("[userSettings] unable to load provider API keys", err);
-        return { anthropic: null, gemini: null };
-    });
+    const providerKeys = await loadProviderKeys(userId, client);
     const api_keys: UserApiKeys = {
         case: caseKey?.apiKey ?? null,
         caseSource: caseKey?.source ?? null,
@@ -66,10 +73,7 @@ export async function getUserApiKeys(
         console.error("[userSettings] unable to load Case API key", err);
         return null;
     });
-    const providerKeys = await getEffectiveProviderApiKeys(userId, client).catch((err) => {
-        console.error("[userSettings] unable to load provider API keys", err);
-        return { anthropic: null, gemini: null };
-    });
+    const providerKeys = await loadProviderKeys(userId, client);
     return {
         case: caseKey?.apiKey ?? null,
         caseSource: caseKey?.source ?? null,

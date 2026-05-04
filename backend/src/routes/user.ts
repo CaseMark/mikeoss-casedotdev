@@ -197,11 +197,11 @@ userRouter.get("/case-models", requireAuth, async (_req, res) => {
         try {
           const ids = await listProviderModels(provider, effective.apiKey);
           return nativeProviderModelOptions(provider, ids, "live");
-        } catch (err) {
-          const detail = err instanceof Error ? err.message : String(err);
+        } catch {
+          const detail = "Provider model catalog unavailable; using static fallback.";
           providerErrors.push({ provider, error: detail });
           console.warn(
-            `[provider-models] falling back to static ${provider} catalog for user ${userId}: ${detail}`,
+            `[provider-models] falling back to static ${provider} catalog for user ${userId}`,
           );
           const ids = await listProviderModels(provider);
           return nativeProviderModelOptions(provider, ids, "fallback");
