@@ -4,6 +4,7 @@ import { createServerDb } from "../lib/db";
 import {
   confirmDirectUpload,
   createDirectUpload,
+  buildContentDisposition,
   downloadFile,
   deleteFile,
   getSignedUrl,
@@ -235,14 +236,26 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
     isDocx && active.pdf_storage_path
       ? active.pdf_storage_path
       : active.storage_path;
-  const url = await getSignedUrl(servePath, 3600, doc.filename as string, {
-    db,
-  });
-  if (!url)
+  const raw = await downloadFile(servePath, { db });
+  if (!raw)
     return void res
       .status(404)
       .json({ detail: "Document not found in storage" });
-  res.redirect(302, url);
+  const body = Buffer.from(raw);
+  const contentType =
+    servePath === active.pdf_storage_path || fileType === "pdf"
+      ? "application/pdf"
+      : fileType === "doc"
+        ? "application/msword"
+        : WORD_CONTENT_TYPE;
+  res.setHeader("Content-Type", contentType);
+  res.setHeader("Content-Length", String(body.byteLength));
+  res.setHeader(
+    "Content-Disposition",
+    buildContentDisposition("inline", doc.filename as string),
+  );
+  res.setHeader("Cache-Control", "private, no-store");
+  res.send(body);
 });
 
 // POST /single-documents/download-zip
