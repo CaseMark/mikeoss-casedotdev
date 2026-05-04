@@ -10,6 +10,7 @@ import crypto from "crypto";
 import type { createServerDb } from "./db";
 import { CaseClient } from "./caseClient";
 import { caseClientForEffectiveKey, getEffectiveCaseApiKey } from "./caseCredentials";
+import { isDemoBudgetError } from "./demoUsage";
 
 type Db = ReturnType<typeof createServerDb>;
 
@@ -531,6 +532,7 @@ export async function downloadFile(
     const { client } = await clientForVault(ref.vaultId, context.db);
     return await client.downloadVaultObject(ref.vaultId, ref.objectId);
   } catch (err) {
+    if (isDemoBudgetError(err)) throw err;
     console.error("[case-storage] download failed", err);
     return null;
   }
@@ -575,7 +577,8 @@ export async function getSignedUrl(
       expiresIn,
     });
     return resolvedPresignedUrl(presigned);
-  } catch {
+  } catch (err) {
+    if (isDemoBudgetError(err)) throw err;
     return null;
   }
 }

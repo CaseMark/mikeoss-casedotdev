@@ -4,6 +4,7 @@ import { createServerDb } from "../lib/db";
 import { buildContentDisposition, downloadFile } from "../lib/storage";
 import { verifyDownload } from "../lib/downloadTokens";
 import { ensureDocAccess } from "../lib/access";
+import { isDemoBudgetError } from "../lib/demoUsage";
 
 export const downloadsRouter = Router();
 
@@ -57,7 +58,23 @@ downloadsRouter.get("/:token", requireAuth, async (req, res) => {
     if (!access.ok)
         return void res.status(404).json({ detail: "File not found" });
 
-    const raw = await downloadFile(info.path, { db });
+    let raw: ArrayBuffer | null;
+    try {
+        raw = await downloadFile(info.path, { db });
+    } catch (err) {
+        if (isDemoBudgetError(err)) {
+            return void res.status(402).json({
+                detail:
+                    err instanceof Error
+                        ? err.message
+                        : "Demo budget exhausted for this user.",
+                code: "demo_budget_exceeded",
+            });
+        }
+        return void res.status(500).json({
+            detail: err instanceof Error ? err.message : String(err),
+        });
+    }
     if (!raw)
         return void res.status(404).json({ detail: "File not found" });
 

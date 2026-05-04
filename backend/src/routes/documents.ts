@@ -37,6 +37,18 @@ function errorDetail(err: unknown) {
   return err instanceof Error ? err.message : String(err);
 }
 
+function sendDemoBudgetError(
+  res: import("express").Response,
+  err: unknown,
+): boolean {
+  if (!isDemoBudgetError(err)) return false;
+  res.status(402).json({
+    detail: errorDetail(err),
+    code: "demo_budget_exceeded",
+  });
+  return true;
+}
+
 function arrayBufferCopy(bytes: Buffer): ArrayBuffer {
   return new Uint8Array(bytes).buffer as ArrayBuffer;
 }
@@ -236,7 +248,13 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
     isDocx && active.pdf_storage_path
       ? active.pdf_storage_path
       : active.storage_path;
-  const raw = await downloadFile(servePath, { db });
+  let raw: ArrayBuffer | null;
+  try {
+    raw = await downloadFile(servePath, { db });
+  } catch (err) {
+    if (sendDemoBudgetError(res, err)) return;
+    return void res.status(500).json({ detail: errorDetail(err) });
+  }
   if (!raw)
     return void res
       .status(404)
@@ -355,12 +373,15 @@ documentsRouter.get("/:documentId/url", requireAuth, async (req, res) => {
     active.display_name,
     active.version_number,
   );
-  const url = await getSignedUrl(
-    active.storage_path,
-    3600,
-    downloadFilename,
-    { db },
-  );
+  let url: string | null;
+  try {
+    url = await getSignedUrl(active.storage_path, 3600, downloadFilename, {
+      db,
+    });
+  } catch (err) {
+    if (sendDemoBudgetError(res, err)) return;
+    return void res.status(500).json({ detail: errorDetail(err) });
+  }
   if (!url)
     return void res.status(503).json({ detail: "Storage not configured" });
 
@@ -402,19 +423,26 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
   if (!active)
     return void res.status(404).json({ detail: "No file available" });
 
-  const url = await getSignedUrl(
-    active.storage_path,
-    3600,
-    resolveDownloadFilename(
-      doc.filename as string,
-      active.display_name,
-      active.version_number,
-    ),
-    { db },
-  );
-  if (!url)
+  let raw: ArrayBuffer | null;
+  try {
+    raw = await downloadFile(active.storage_path, { db });
+  } catch (err) {
+    if (sendDemoBudgetError(res, err)) return;
+    return void res.status(500).json({ detail: errorDetail(err) });
+  }
+  if (!raw)
     return void res.status(404).json({ detail: "Document bytes not available" });
-  res.redirect(302, url);
+  const filename = resolveDownloadFilename(
+    doc.filename as string,
+    active.display_name,
+    active.version_number,
+  );
+  const body = Buffer.from(raw);
+  res.setHeader("Content-Type", WORD_CONTENT_TYPE);
+  res.setHeader("Content-Length", String(body.byteLength));
+  res.setHeader("Content-Disposition", buildContentDisposition("inline", filename));
+  res.setHeader("Cache-Control", "private, no-store");
+  res.send(body);
 });
 
 // Compose a download-friendly filename that carries the edit version
