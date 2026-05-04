@@ -16,6 +16,7 @@ import {
   getProviderCredentialStatuses,
   listProviderModels,
   nativeProviderModelOptions,
+  PROVIDERS,
   saveProviderApiKey,
   type ProviderId,
 } from "../lib/providerCredentials";
@@ -191,7 +192,7 @@ userRouter.get("/case-models", requireAuth, async (_req, res) => {
   const providerErrors: { provider: ProviderId; error: string }[] = [];
   const nativeModels = (
     await Promise.all(
-      (["anthropic", "gemini"] as ProviderId[]).map(async (provider) => {
+      PROVIDERS.map(async (provider) => {
         const effective = await getEffectiveProviderApiKey(userId, provider, db);
         if (!effective) return [];
         try {

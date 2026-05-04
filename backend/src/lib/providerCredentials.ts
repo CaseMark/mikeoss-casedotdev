@@ -33,7 +33,7 @@ export type ProviderCredentialStatus = {
     error: string | null;
 };
 
-export type EffectiveProviderApiKey = {
+type EffectiveProviderApiKey = {
     provider: ProviderId;
     apiKey: string;
     source: "user" | "server";
@@ -257,7 +257,7 @@ export async function getProviderCredentialStatus(
             provider,
             label: providerLabel(provider),
             configured: true,
-            last4: last4(fallback),
+            last4: null,
             status: "unverified",
             verified_at: null,
             last_checked_at: null,
