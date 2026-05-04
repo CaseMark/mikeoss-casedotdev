@@ -139,18 +139,21 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
             // Define credit limit constant
             const MONTHLY_CREDIT_LIMIT = 999999; // temporarily unlimited
 
-            const caseApiKey = await getCaseApiKeyStatus().catch(
-                () => DEFAULT_CASE_KEY_STATUS,
-            );
-            const caseCatalog = await getCaseModelCatalog().catch(
-                () => DEFAULT_CASE_MODEL_CATALOG,
-            );
-            const demoUsage = await getDemoUsage().catch(
-                () => DEFAULT_DEMO_USAGE,
-            );
-            const providerCredentials = await getProviderCredentialStatuses().catch(
-                () => DEFAULT_PROVIDER_CREDENTIALS,
-            );
+            const [
+                caseApiKey,
+                caseCatalog,
+                demoUsage,
+                providerCredentials,
+                data,
+            ] = await Promise.all([
+                getCaseApiKeyStatus().catch(() => DEFAULT_CASE_KEY_STATUS),
+                getCaseModelCatalog().catch(() => DEFAULT_CASE_MODEL_CATALOG),
+                getDemoUsage().catch(() => DEFAULT_DEMO_USAGE),
+                getProviderCredentialStatuses().catch(
+                    () => DEFAULT_PROVIDER_CREDENTIALS,
+                ),
+                getUserProfile(),
+            ]);
             const caseModels = caseCatalog.models.length
                 ? caseCatalog.models
                 : FALLBACK_CASE_MODELS;
@@ -160,8 +163,6 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 error: caseCatalog.error,
                 provider_errors: caseCatalog.provider_errors,
             };
-
-            const data = await getUserProfile();
 
             // Use fetched data to update profile state
             if (data) {
