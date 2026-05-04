@@ -33,6 +33,7 @@ import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
     getModelProvider,
     isModelAvailable,
+    providerCredentialState,
     type ModelProvider,
 } from "@/app/lib/modelAvailability";
 import { TRSidePanel } from "./TRSidePanel";
@@ -87,17 +88,10 @@ export function TRView({ reviewId, projectId }: Props) {
     const tableRef = useRef<TRTableHandle>(null);
     const router = useRouter();
     const { profile } = useUserProfile();
-    const anthropicStatus = profile?.providerCredentials.find(
-        (item) => item.provider === "anthropic",
+    const { apiKeys } = providerCredentialState(
+        profile?.caseApiKey.configured ?? false,
+        profile?.providerCredentials,
     );
-    const geminiStatus = profile?.providerCredentials.find(
-        (item) => item.provider === "gemini",
-    );
-    const apiKeys = {
-        caseApiKeyConfigured: profile?.caseApiKey.configured ?? false,
-        anthropicApiKeyConfigured: anthropicStatus?.configured ?? false,
-        geminiApiKeyConfigured: geminiStatus?.configured ?? false,
-    };
     const tabularModel = profile?.tabularModel ?? "casemark/core-large";
 
     useEffect(() => {

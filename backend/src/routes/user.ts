@@ -188,6 +188,7 @@ userRouter.get("/case-models", requireAuth, async (_req, res) => {
     error = err instanceof Error ? err.message : String(err);
   }
 
+  const providerErrors: { provider: ProviderId; error: string }[] = [];
   const nativeModels = (
     await Promise.all(
       (["anthropic", "gemini"] as ProviderId[]).map(async (provider) => {
@@ -196,7 +197,12 @@ userRouter.get("/case-models", requireAuth, async (_req, res) => {
         try {
           const ids = await listProviderModels(provider, effective.apiKey);
           return nativeProviderModelOptions(provider, ids, "live");
-        } catch {
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          providerErrors.push({ provider, error: detail });
+          console.warn(
+            `[provider-models] falling back to static ${provider} catalog for user ${userId}: ${detail}`,
+          );
           const ids = await listProviderModels(provider);
           return nativeProviderModelOptions(provider, ids, "fallback");
         }
@@ -209,6 +215,7 @@ userRouter.get("/case-models", requireAuth, async (_req, res) => {
     key_source: keySource,
     models: [...caseModels, ...nativeModels],
     ...(error ? { error } : {}),
+    ...(providerErrors.length ? { provider_errors: providerErrors } : {}),
   });
 });
 

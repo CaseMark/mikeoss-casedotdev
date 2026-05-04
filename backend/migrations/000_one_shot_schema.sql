@@ -232,6 +232,7 @@ create table if not exists public.case_api_credentials (
   capabilities jsonb not null default '{}'::jsonb,
   last_checked_at timestamptz,
   error text,
+  revoked_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

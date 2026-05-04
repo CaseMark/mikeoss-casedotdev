@@ -19,7 +19,10 @@ import {
     modelOptionsOrFallback,
     type ModelOption,
 } from "@/app/lib/caseModels";
-import type { ModelProviderAvailability } from "@/app/lib/modelAvailability";
+import {
+    providerCredentialState,
+    type ModelProviderAvailability,
+} from "@/app/lib/modelAvailability";
 import type {
     CaseApiKeyStatus,
     CaseModelCatalog,
@@ -36,17 +39,11 @@ export default function ModelsAndApiKeysPage() {
         updateProviderApiKey,
     } =
         useUserProfile();
-    const anthropicStatus = profile?.providerCredentials.find(
-        (item) => item.provider === "anthropic",
-    );
-    const geminiStatus = profile?.providerCredentials.find(
-        (item) => item.provider === "gemini",
-    );
-    const apiKeys: ModelProviderAvailability = {
-        caseApiKeyConfigured: profile?.caseApiKey.configured ?? false,
-        anthropicApiKeyConfigured: anthropicStatus?.configured ?? false,
-        geminiApiKeyConfigured: geminiStatus?.configured ?? false,
-    };
+    const { anthropicStatus, geminiStatus, apiKeys } =
+        providerCredentialState(
+            profile?.caseApiKey.configured ?? false,
+            profile?.providerCredentials,
+        );
     const models = modelOptionsOrFallback(profile?.caseModels);
     const keySource = profile?.caseApiKey.source ?? "missing";
     const usingServerKey = keySource === "server";
@@ -277,6 +274,14 @@ function CaseStatusSummary({
                     : ""}
                 {modelCatalog?.error ? ` (${modelCatalog.error})` : ""}
             </p>
+            {!!modelCatalog?.provider_errors?.length && (
+                <p className="mt-2 text-xs text-amber-600">
+                    Provider catalog fallback:{" "}
+                    {modelCatalog.provider_errors
+                        .map((item) => `${item.provider}: ${item.error}`)
+                        .join("; ")}
+                </p>
+            )}
         </div>
     );
 }
@@ -377,8 +382,10 @@ function ProviderKeyCard({
                 ? "Disabled in demo"
                 : "No key";
     const detail =
-        status.source === "user" && status.last4
+        status.source === "user" && status.configured && status.last4
             ? `Verified key ending in ${status.last4}`
+            : status.source === "user" && status.last4
+              ? `Previous key ending in ${status.last4} is not active.`
             : status.source === "server" && status.last4
               ? `Using local server key ending in ${status.last4}`
               : status.error ?? "Optional LLM-only provider.";
@@ -411,7 +418,9 @@ function ProviderKeyCard({
                 <ApiKeyField
                     label={`${status.label} API key`}
                     placeholder={
-                        status.source === "user" && status.last4
+                        status.source === "user" &&
+                        status.configured &&
+                        status.last4
                             ? `Saved key ending in ${status.last4}`
                             : status.source === "server" && status.last4
                               ? `Using local server key ending in ${status.last4}`
@@ -421,7 +430,7 @@ function ProviderKeyCard({
                     }
                     error={status.error ?? undefined}
                     onSave={(value) => onSave(status.provider, value.trim())}
-                    canClear={status.source === "user"}
+                    canClear={status.source === "user" && status.configured}
                     onClear={() => onSave(status.provider, null)}
                 />
             )}

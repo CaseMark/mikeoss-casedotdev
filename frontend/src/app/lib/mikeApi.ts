@@ -161,6 +161,7 @@ export interface CaseModelCatalog {
     key_source: "user" | "server" | "demo" | "missing";
     models: ModelOption[];
     error?: string;
+    provider_errors?: { provider: ProviderId; error: string }[];
 }
 
 export type ProviderId = "anthropic" | "gemini";

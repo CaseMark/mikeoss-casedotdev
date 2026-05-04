@@ -27,6 +27,7 @@ import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
     getModelProvider,
     isModelAvailable,
+    providerCredentialState,
     type ModelProvider,
 } from "@/app/lib/modelAvailability";
 import type { MikeDocument, MikeMessage } from "../shared/types";
@@ -67,17 +68,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     } | null>(null);
     const [model, setModel] = useSelectedModel();
     const { profile } = useUserProfile();
-    const anthropicStatus = profile?.providerCredentials.find(
-        (item) => item.provider === "anthropic",
+    const { apiKeys } = providerCredentialState(
+        profile?.caseApiKey.configured ?? false,
+        profile?.providerCredentials,
     );
-    const geminiStatus = profile?.providerCredentials.find(
-        (item) => item.provider === "gemini",
-    );
-    const apiKeys = {
-        caseApiKeyConfigured: profile?.caseApiKey.configured ?? false,
-        anthropicApiKeyConfigured: anthropicStatus?.configured ?? false,
-        geminiApiKeyConfigured: geminiStatus?.configured ?? false,
-    };
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const [docSelectorOpen, setDocSelectorOpen] = useState(false);
     const [workflowModalOpen, setWorkflowModalOpen] = useState(false);

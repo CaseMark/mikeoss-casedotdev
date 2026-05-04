@@ -158,6 +158,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 source: caseCatalog.source,
                 key_source: caseCatalog.key_source,
                 error: caseCatalog.error,
+                provider_errors: caseCatalog.provider_errors,
             };
 
             const data = await getUserProfile();
@@ -326,6 +327,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                                   source: catalog.source,
                                   key_source: catalog.key_source,
                                   error: catalog.error,
+                                  provider_errors: catalog.provider_errors,
                               },
                               demoUsage,
                           }
@@ -373,6 +375,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                                   source: catalog.source,
                                   key_source: catalog.key_source,
                                   error: catalog.error,
+                                  provider_errors: catalog.provider_errors,
                               },
                           }
                         : null,

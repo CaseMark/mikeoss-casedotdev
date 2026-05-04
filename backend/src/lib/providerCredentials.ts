@@ -57,16 +57,14 @@ function providerEnvKey(provider: ProviderId): string {
 }
 
 function serverProviderFallbackAllowed(): boolean {
+    if (process.env.NODE_ENV === "production") return false;
     const configured = process.env.MIKE_ALLOW_SERVER_PROVIDER_KEY_FALLBACK
         ?.trim()
         .toLowerCase();
     if (configured === "true" || configured === "1" || configured === "yes") {
         return true;
     }
-    if (configured === "false" || configured === "0" || configured === "no") {
-        return false;
-    }
-    return process.env.NODE_ENV !== "production";
+    return false;
 }
 
 function serverProviderKey(provider: ProviderId): string | null {
@@ -358,6 +356,7 @@ export async function saveProviderApiKey(
             last_checked_at: now,
             capabilities,
             error: null,
+            revoked_at: null,
             updated_at: now,
         },
         { onConflict: "user_id, provider" },
@@ -376,9 +375,20 @@ export async function clearProviderApiKey(
     }
     const provider = providerFromString(rawProvider);
     if (!provider) throw new Error("Unsupported provider.");
+    const now = new Date().toISOString();
     await db
         .from("provider_api_credentials")
-        .delete()
+        .update({
+            encrypted_key: "",
+            key_iv: "",
+            key_tag: "",
+            status: "invalid",
+            capabilities: EMPTY_CAPABILITIES,
+            error: null,
+            revoked_at: now,
+            last_checked_at: now,
+            updated_at: now,
+        })
         .eq("user_id", userId)
         .eq("provider", provider);
     return getProviderCredentialStatus(userId, provider, db);

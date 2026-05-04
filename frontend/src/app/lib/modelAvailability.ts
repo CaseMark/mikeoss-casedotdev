@@ -1,4 +1,5 @@
 import { modelOptionsOrFallback, type ModelOption } from "./caseModels";
+import type { ProviderCredentialStatus } from "./mikeApi";
 
 export type ModelProvider = "case" | "anthropic" | "gemini";
 
@@ -7,6 +8,41 @@ export type ModelProviderAvailability = {
     anthropicApiKeyConfigured?: boolean;
     geminiApiKeyConfigured?: boolean;
 };
+
+export function isRecognizedModelId(
+    modelId: string,
+    models?: ModelOption[],
+): boolean {
+    const id = modelId.trim();
+    return (
+        !!id &&
+        (modelOptionsOrFallback(models).some((model) => model.id === id) ||
+            id.includes("/") ||
+            id.startsWith("claude") ||
+            id.startsWith("gemini"))
+    );
+}
+
+export function providerCredentialState(
+    caseApiKeyConfigured: boolean,
+    providerCredentials?: ProviderCredentialStatus[] | null,
+) {
+    const anthropicStatus = providerCredentials?.find(
+        (item) => item.provider === "anthropic",
+    );
+    const geminiStatus = providerCredentials?.find(
+        (item) => item.provider === "gemini",
+    );
+    return {
+        anthropicStatus,
+        geminiStatus,
+        apiKeys: {
+            caseApiKeyConfigured,
+            anthropicApiKeyConfigured: anthropicStatus?.configured ?? false,
+            geminiApiKeyConfigured: geminiStatus?.configured ?? false,
+        } satisfies ModelProviderAvailability,
+    };
+}
 
 export function getModelProvider(modelId: string): ModelProvider | null {
     const id = modelId.trim();
@@ -22,13 +58,12 @@ export function isModelAvailable(
     apiKeys: ModelProviderAvailability,
     models?: ModelOption[],
 ): boolean {
-    const known =
-        modelOptionsOrFallback(models).some((model) => model.id === modelId) ||
-        modelId.includes("/") ||
-        modelId.startsWith("claude") ||
-        modelId.startsWith("gemini");
     const provider = getModelProvider(modelId);
-    return known && !!provider && isProviderAvailable(provider, apiKeys);
+    return (
+        isRecognizedModelId(modelId, models) &&
+        !!provider &&
+        isProviderAvailable(provider, apiKeys)
+    );
 }
 
 export function isProviderAvailable(

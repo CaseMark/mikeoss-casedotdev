@@ -35,6 +35,7 @@ import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
     getModelProvider,
     isModelAvailable,
+    providerCredentialState,
     type ModelProviderAvailability,
     type ModelProvider,
 } from "@/app/lib/modelAvailability";
@@ -612,17 +613,10 @@ export function TRChatPanel({
     onChatIdChange,
 }: Props) {
     const { profile, updateModelPreference } = useUserProfile();
-    const anthropicStatus = profile?.providerCredentials.find(
-        (item) => item.provider === "anthropic",
+    const { apiKeys } = providerCredentialState(
+        profile?.caseApiKey.configured ?? false,
+        profile?.providerCredentials,
     );
-    const geminiStatus = profile?.providerCredentials.find(
-        (item) => item.provider === "gemini",
-    );
-    const apiKeys = {
-        caseApiKeyConfigured: profile?.caseApiKey.configured ?? false,
-        anthropicApiKeyConfigured: anthropicStatus?.configured ?? false,
-        geminiApiKeyConfigured: geminiStatus?.configured ?? false,
-    };
     const currentModel = profile?.tabularModel ?? "casemark/core-large";
     const [apiKeyModalProvider, setApiKeyModalProvider] =
         useState<ModelProvider | null>(null);
