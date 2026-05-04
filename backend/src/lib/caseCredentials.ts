@@ -134,28 +134,6 @@ export async function getCaseCredentialStatus(
     userId: string,
     db: Db,
 ): Promise<CaseCredentialStatus> {
-    const demoKey = isDemoModeEnabled() ? demoCaseApiKey() : null;
-    if (demoKey) {
-        const checkedAt = new Date().toISOString();
-        return {
-            configured: true,
-            last4: null,
-            status: "verified",
-            verified_at: checkedAt,
-            last_checked_at: checkedAt,
-            source: "demo",
-            capabilities: {
-                llm: true,
-                vault: true,
-                skills: true,
-                matters: true,
-                legal: true,
-                model_count: null,
-            },
-            error: null,
-        };
-    }
-
     const { data } = await db
         .from("case_api_credentials")
         .select("key_last4, status, verified_at, last_checked_at, capabilities, error")
@@ -163,6 +141,28 @@ export async function getCaseCredentialStatus(
         .maybeSingle();
 
     if (!data) {
+        const demoKey = isDemoModeEnabled() ? demoCaseApiKey() : null;
+        if (demoKey) {
+            const checkedAt = new Date().toISOString();
+            return {
+                configured: true,
+                last4: null,
+                status: "verified",
+                verified_at: checkedAt,
+                last_checked_at: checkedAt,
+                source: "demo",
+                capabilities: {
+                    llm: true,
+                    vault: true,
+                    skills: true,
+                    matters: true,
+                    legal: true,
+                    model_count: null,
+                },
+                error: null,
+            };
+        }
+
         const fallback = serverFallbackKey();
         if (fallback) {
             try {
@@ -244,10 +244,10 @@ export async function getEffectiveCaseApiKey(
     userId: string,
     db: Db,
 ): Promise<EffectiveCaseApiKey | null> {
-    const demoKey = isDemoModeEnabled() ? demoCaseApiKey() : null;
-    if (demoKey) return { apiKey: demoKey, source: "demo" };
     const userKey = await getUserCaseApiKey(userId, db);
     if (userKey) return { apiKey: userKey, source: "user" };
+    const demoKey = isDemoModeEnabled() ? demoCaseApiKey() : null;
+    if (demoKey) return { apiKey: demoKey, source: "demo" };
     const fallback = serverFallbackKey();
     if (fallback) return { apiKey: fallback, source: "server" };
     return null;
@@ -301,9 +301,6 @@ export async function saveCaseApiKey(
     apiKey: string,
     db: Db,
 ): Promise<CaseCredentialStatus> {
-    if (isDemoModeEnabled()) {
-        throw new Error("Demo mode uses the shared Case.dev demo key. Personal keys are disabled.");
-    }
     const trimmed = apiKey.trim();
     const capabilities = await validateCaseApiKey(trimmed);
     const encrypted = encryptCaseApiKey(trimmed);
@@ -340,9 +337,6 @@ export async function clearCaseApiKey(
     userId: string,
     db: Db,
 ): Promise<CaseCredentialStatus> {
-    if (isDemoModeEnabled()) {
-        throw new Error("Demo mode uses the shared Case.dev demo key. Personal key changes are disabled.");
-    }
     await db.from("case_api_credentials").delete().eq("user_id", userId);
     return getCaseCredentialStatus(userId, db);
 }
