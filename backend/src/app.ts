@@ -13,6 +13,12 @@ import { downloadsRouter } from "./routes/downloads";
 import { caseWebhooksRouter } from "./routes/caseWebhooks";
 import { getBetterAuthNodeHandler } from "./lib/betterAuth";
 import { assertDownloadSigningSecret } from "./lib/downloadTokens";
+import {
+  demoBudgetLimitMicros,
+  demoCaseApiKey,
+  isDemoModeEnabled,
+  microsToUsd,
+} from "./lib/demoMode";
 
 function envInt(name: string, fallback: number): number {
   const parsed = Number.parseInt(process.env[name] ?? "", 10);
@@ -87,6 +93,16 @@ export function createApp() {
   app.use("/webhooks/case", caseWebhooksRouter);
 
   app.get("/health", (_req, res) => res.json({ ok: true }));
+  app.get("/demo-status", (_req, res) => {
+    const hasHostedDemoKey = !!demoCaseApiKey();
+    const enabled = isDemoModeEnabled();
+    res.json({
+      enabled,
+      hosted_demo_configured: hasHostedDemoKey,
+      disabled_landing: hasHostedDemoKey && !enabled,
+      budget_usd: microsToUsd(demoBudgetLimitMicros()),
+    });
+  });
 
   return app;
 }
