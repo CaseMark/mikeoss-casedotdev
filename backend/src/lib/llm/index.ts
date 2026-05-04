@@ -12,9 +12,17 @@ export async function streamChatWithTools(
 ): Promise<StreamChatResult> {
     const provider = providerForModel(params.model);
     if (provider === "case") {
+        const usageContext = params.apiKeys?.caseUsageContext
+            ? {
+                  ...params.apiKeys.caseUsageContext,
+                  service: "llm" as const,
+                  operation: "llm.chat_stream",
+              }
+            : undefined;
         return streamCaseChat({
             ...params,
             apiKey: params.apiKeys?.case,
+            usageContext,
         });
     }
     if (provider === "claude") return streamClaude(params);
@@ -30,9 +38,17 @@ export async function completeText(params: {
 }): Promise<string> {
     const provider = providerForModel(params.model);
     if (provider === "case") {
+        const usageContext = params.apiKeys?.caseUsageContext
+            ? {
+                  ...params.apiKeys.caseUsageContext,
+                  service: "llm" as const,
+                  operation: "llm.chat_completion",
+              }
+            : undefined;
         return completeCaseText({
             ...params,
             apiKey: params.apiKeys?.case,
+            usageContext,
         });
     }
     if (provider === "claude") return completeClaudeText(params);

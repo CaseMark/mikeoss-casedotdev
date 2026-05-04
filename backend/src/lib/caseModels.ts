@@ -139,8 +139,11 @@ export function normalizeCaseModelCatalog(
     });
 }
 
-export async function getCaseModelCatalog(apiKey: string): Promise<CaseModelOption[]> {
-    const client = new CaseClient(apiKey);
+export async function getCaseModelCatalog(apiKeyOrClient: string | CaseClient): Promise<CaseModelOption[]> {
+    const client =
+        typeof apiKeyOrClient === "string"
+            ? new CaseClient(apiKeyOrClient)
+            : apiKeyOrClient;
     const [models, config] = await Promise.all([
         client.listModels(),
         client.getLlmConfig().catch(() => ({ models: [] })),

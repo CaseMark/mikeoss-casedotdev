@@ -92,6 +92,22 @@ create table if not exists public.projects (
   cm_number text,
   visibility text not null default 'private',
   shared_with jsonb not null default '[]'::jsonb,
+  case_matter_id text,
+  case_primary_vault_id text,
+  matter_status text,
+  practice_area text,
+  matter_type text,
+  client_name text,
+  responsible_attorney text,
+  case_matter_metadata jsonb not null default '{}'::jsonb,
+  matter_sync_status text not null default 'pending'
+    check (matter_sync_status = any (array[
+      'pending'::text,
+      'active'::text,
+      'failed'::text
+    ])),
+  matter_sync_error text,
+  matter_synced_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -228,6 +244,54 @@ create index if not exists case_api_credentials_user_idx
 -- Users manage credentials only through the backend so encrypted blobs are
 -- never exposed to the browser.
 
+create table if not exists public.demo_user_usage (
+  user_id text primary key references public."user"(id) on delete cascade,
+  limit_usd_micros bigint not null default 5000000
+    check (limit_usd_micros >= 0),
+  spent_usd_micros bigint not null default 0
+    check (spent_usd_micros >= 0),
+  reserved_usd_micros bigint not null default 0
+    check (reserved_usd_micros >= 0),
+  blocked_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.demo_usage_events (
+  id uuid primary key default gen_random_uuid(),
+  request_id text not null,
+  user_id text not null references public."user"(id) on delete cascade,
+  case_source text not null default 'demo',
+  status text not null default 'reserved'
+    check (status = any (array[
+      'reserved'::text,
+      'charged'::text,
+      'released'::text
+    ])),
+  operation text not null,
+  service text not null,
+  model text,
+  estimated_usd_micros bigint not null default 0,
+  actual_usd_micros bigint,
+  charged_usd_micros bigint not null default 0,
+  prompt_tokens integer,
+  completion_tokens integer,
+  total_tokens integer,
+  units jsonb not null default '{}'::jsonb,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists demo_usage_events_user_created_idx
+  on public.demo_usage_events(user_id, created_at desc);
+
+create index if not exists demo_usage_events_request_idx
+  on public.demo_usage_events(request_id);
+
+create index if not exists demo_usage_events_service_idx
+  on public.demo_usage_events(service, operation, created_at desc);
+
 create table if not exists public.case_vault_links (
   id uuid primary key default gen_random_uuid(),
   owner_user_id text not null,
@@ -284,6 +348,11 @@ create table if not exists public.case_document_links (
   page_count integer,
   text_length integer,
   chunk_count integer,
+  vector_count integer,
+  graph_status text,
+  transcript_object_id text,
+  object_metadata jsonb not null default '{}'::jsonb,
+  last_seen_at timestamptz,
   error text,
   last_synced_at timestamptz,
   created_at timestamptz not null default now(),
@@ -340,6 +409,25 @@ create table if not exists public.hidden_workflows (
 
 create index if not exists idx_hidden_workflows_user
   on public.hidden_workflows(user_id);
+
+create table if not exists public.case_skill_favorites (
+  id uuid primary key default gen_random_uuid(),
+  user_id text not null references public."user"(id) on delete cascade,
+  skill_slug text not null,
+  skill_name text not null,
+  skill_summary text,
+  skill_tags jsonb not null default '[]'::jsonb,
+  skill_source text,
+  skill_version text,
+  skill_author_name text,
+  skill_license text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(user_id, skill_slug)
+);
+
+create index if not exists case_skill_favorites_user_created_idx
+  on public.case_skill_favorites(user_id, created_at desc);
 
 create table if not exists public.workflow_shares (
   id uuid primary key default gen_random_uuid(),

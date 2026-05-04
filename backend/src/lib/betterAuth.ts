@@ -2,6 +2,11 @@ import type { Request } from "express";
 import { randomUUID } from "crypto";
 import { getPostgresPool } from "./postgresCompat";
 
+// Vercel's file tracer needs static dependency edges, while runtime still needs
+// native dynamic import because better-auth is ESM-only in this CommonJS build.
+require.resolve("better-auth");
+require.resolve("better-auth/node");
+
 type BetterAuthInstance = {
   handler: (request: Request) => Promise<Response>;
   api: {

@@ -9,7 +9,7 @@
 import crypto from "crypto";
 import type { createServerDb } from "./db";
 import { CaseClient } from "./caseClient";
-import { getEffectiveCaseApiKey } from "./caseCredentials";
+import { caseClientForEffectiveKey, getEffectiveCaseApiKey } from "./caseCredentials";
 
 type Db = ReturnType<typeof createServerDb>;
 
@@ -25,6 +25,15 @@ export type StorageContext = {
   role?: CaseBlobRole;
   autoIndex?: boolean;
   path?: string | null;
+};
+
+export type DirectUploadSession = {
+  storageUri: string;
+  vaultId: string;
+  objectId: string;
+  uploadUrl: string;
+  expiresIn?: number;
+  requiresConfirm: boolean;
 };
 
 type VaultLink = {
@@ -86,6 +95,10 @@ export function hashBytes(content: ArrayBuffer | Buffer): string {
 
 function sizeOf(content: ArrayBuffer | Buffer): number {
   return content instanceof Buffer ? content.byteLength : content.byteLength;
+}
+
+function uploadBuffer(content: ArrayBuffer | Buffer): Buffer {
+  return Buffer.isBuffer(content) ? Buffer.from(content) : Buffer.from(new Uint8Array(content));
 }
 
 function sleep(ms: number) {
@@ -238,7 +251,15 @@ async function clientForVault(
   if (!effective) {
     throw new Error("Case Vault owner has not configured a verified Case.dev API key.");
   }
-  return { client: new CaseClient(effective.apiKey), vaultLink };
+  return {
+    client: caseClientForEffectiveKey(effective, {
+      userId: ownerUserId,
+      db,
+      service: "vault",
+      operation: "vault.operation",
+    }),
+    vaultLink,
+  };
 }
 
 async function clientForNewUpload(context: StorageContext): Promise<{
@@ -257,7 +278,12 @@ async function clientForNewUpload(context: StorageContext): Promise<{
   if (!effective) {
     throw new Error("Add a Case.dev API key with Vault access before uploading documents.");
   }
-  const client = new CaseClient(effective.apiKey);
+  const client = caseClientForEffectiveKey(effective, {
+    userId: owner.ownerUserId,
+    db: context.db,
+    service: "vault",
+    operation: "vault.upload",
+  });
   const vaultLink = await ensureCaseVaultLink({
     db: context.db,
     ownerUserId: owner.ownerUserId,
@@ -266,6 +292,31 @@ async function clientForNewUpload(context: StorageContext): Promise<{
     client,
   });
   return { client, vaultLink };
+}
+
+async function projectMatterMetadata(context: StorageContext): Promise<{
+  caseMatterId: string | null;
+  folderId: string | null;
+}> {
+  if (!context.projectId) return { caseMatterId: null, folderId: null };
+  const [{ data: project }, { data: doc }] = await Promise.all([
+    context.db
+      .from("projects")
+      .select("case_matter_id")
+      .eq("id", context.projectId)
+      .maybeSingle(),
+    context.documentId
+      ? context.db
+          .from("documents")
+          .select("folder_id")
+          .eq("id", context.documentId)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
+  ]);
+  return {
+    caseMatterId: (project?.case_matter_id as string | null | undefined) ?? null,
+    folderId: (doc?.folder_id as string | null | undefined) ?? null,
+  };
 }
 
 function filenameFromKey(key: string): string {
@@ -297,6 +348,10 @@ export async function uploadFile(
   contentType: string,
   context?: StorageContext,
 ): Promise<string> {
+  const contentForUpload = uploadBuffer(content);
+  const contentSize = sizeOf(contentForUpload);
+  const contentHash = hashBytes(contentForUpload);
+
   if (isCaseStorageUri(keyOrUri)) {
     if (!context?.db) {
       throw new Error("Updating a Case Vault object requires storage context.");
@@ -309,10 +364,14 @@ export async function uploadFile(
       objectId: ref.objectId,
       operation: "PUT",
       contentType,
-      sizeBytes: sizeOf(content),
+      sizeBytes: contentSize,
       expiresIn: 3600,
     });
-    await client.uploadToPresignedUrl(resolvedPresignedUrl(presigned), content, contentType);
+    await client.uploadToPresignedUrl(
+      resolvedPresignedUrl(presigned),
+      contentForUpload,
+      contentType,
+    );
     if (context.autoIndex ?? context.role !== "pdf_rendition") {
       await client.ingestVaultObject(ref.vaultId, ref.objectId).catch(() => {});
     }
@@ -325,11 +384,12 @@ export async function uploadFile(
 
   const { client, vaultLink } = await clientForNewUpload(context);
   const filename = context.filename ?? filenameFromKey(keyOrUri);
+  const matterMetadata = await projectMatterMetadata(context);
   const upload = await client.createVaultUpload({
     vaultId: vaultLink.case_vault_id,
     filename,
     contentType,
-    sizeBytes: sizeOf(content),
+    sizeBytes: contentSize,
     path: context.path ?? keyOrUri,
     auto_index: context.autoIndex ?? context.role !== "pdf_rendition",
     metadata: {
@@ -339,22 +399,119 @@ export async function uploadFile(
       mike_document_id: context.documentId ?? null,
       mike_version_id: context.versionId ?? null,
       mike_project_id: context.projectId ?? null,
-      content_hash: hashBytes(content),
+      mike_matter_id: matterMetadata.caseMatterId,
+      mike_folder_id: matterMetadata.folderId,
+      original_filename: filename,
+      content_hash: contentHash,
     },
   });
   const { etag } = await client.uploadToPresignedUrl(
     resolvedPresignedUrl(upload),
-    content,
+    contentForUpload,
     contentType,
   );
   await client.confirmVaultUpload({
     vaultId: vaultLink.case_vault_id,
     objectId: upload.objectId,
     success: true,
-    sizeBytes: sizeOf(content),
+    sizeBytes: contentSize,
     etag,
   });
+  if (context.autoIndex ?? context.role !== "pdf_rendition") {
+    await client.ingestVaultObject(vaultLink.case_vault_id, upload.objectId).catch(() => {});
+  }
   return buildCaseStorageUri(vaultLink.case_vault_id, upload.objectId);
+}
+
+export async function createDirectUpload(
+  keyOrUri: string,
+  contentType: string,
+  sizeBytes: number,
+  context?: StorageContext,
+): Promise<DirectUploadSession> {
+  if (isCaseStorageUri(keyOrUri)) {
+    if (!context?.db) {
+      throw new Error("Updating a Case Vault object requires storage context.");
+    }
+    const ref = parseCaseStorageUri(keyOrUri);
+    if (!ref) throw new Error("Invalid Case Vault storage URI.");
+    const { client } = await clientForVault(ref.vaultId, context.db);
+    const presigned = await client.createVaultObjectPresignedUrl({
+      vaultId: ref.vaultId,
+      objectId: ref.objectId,
+      operation: "PUT",
+      contentType,
+      sizeBytes,
+      expiresIn: 3600,
+    });
+    return {
+      storageUri: keyOrUri,
+      vaultId: ref.vaultId,
+      objectId: ref.objectId,
+      uploadUrl: resolvedPresignedUrl(presigned),
+      expiresIn: presigned.expiresIn,
+      requiresConfirm: false,
+    };
+  }
+
+  if (!context?.db) {
+    throw new LegacyStorageObjectError(keyOrUri);
+  }
+
+  const { client, vaultLink } = await clientForNewUpload(context);
+  const filename = context.filename ?? filenameFromKey(keyOrUri);
+  const matterMetadata = await projectMatterMetadata(context);
+  const upload = await client.createVaultUpload({
+    vaultId: vaultLink.case_vault_id,
+    filename,
+    contentType,
+    sizeBytes,
+    path: context.path ?? keyOrUri,
+    auto_index: context.autoIndex ?? context.role !== "pdf_rendition",
+    metadata: {
+      source: "mike",
+      mike_storage_role: context.role ?? "source",
+      mike_logical_path: keyOrUri,
+      mike_document_id: context.documentId ?? null,
+      mike_version_id: context.versionId ?? null,
+      mike_project_id: context.projectId ?? null,
+      mike_matter_id: matterMetadata.caseMatterId,
+      mike_folder_id: matterMetadata.folderId,
+      original_filename: filename,
+    },
+  });
+  return {
+    storageUri: buildCaseStorageUri(vaultLink.case_vault_id, upload.objectId),
+    vaultId: vaultLink.case_vault_id,
+    objectId: upload.objectId,
+    uploadUrl: resolvedPresignedUrl(upload),
+    expiresIn: upload.expiresIn,
+    requiresConfirm: true,
+  };
+}
+
+export async function confirmDirectUpload(
+  storageUri: string,
+  params: {
+    db: Db;
+    sizeBytes: number;
+    etag?: string | null;
+    autoIndex?: boolean;
+  },
+): Promise<void> {
+  const ref = parseCaseStorageUri(storageUri);
+  if (!ref) throw new LegacyStorageObjectError(storageUri);
+  const { client } = await clientForVault(ref.vaultId, params.db);
+  await client.confirmVaultUpload({
+    vaultId: ref.vaultId,
+    objectId: ref.objectId,
+    success: true,
+    sizeBytes: params.sizeBytes,
+    etag: params.etag ?? undefined,
+  });
+  if (params.autoIndex ?? true) {
+    await client.ingestVaultObject(ref.vaultId, ref.objectId).catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------------------

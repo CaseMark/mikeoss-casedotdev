@@ -182,7 +182,7 @@ export function AddProjectDocsModal({
                         </div>
                     ) : filtered.length === 0 ? (
                         <p className="text-center text-sm text-gray-400 py-8">
-                            {q ? "No matches found" : "No documents in this project"}
+                            {q ? "No matches found" : "No documents in this matter"}
                         </p>
                     ) : (
                         <div className="rounded-sm border border-gray-100 overflow-hidden">

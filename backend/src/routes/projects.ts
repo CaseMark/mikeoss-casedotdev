@@ -11,9 +11,31 @@ import { docxToPdf, convertedPdfKey } from "../lib/convert";
 import { checkProjectAccess } from "../lib/access";
 import { singleFileUpload } from "../lib/upload";
 import { registerCaseStoredObject, syncDocumentVersionToCase } from "../lib/caseSync";
+import {
+  archiveCaseMatterForProject,
+  caseMatterClientForProject,
+  createMatterBackedProject,
+  ensureCaseMatterForProject,
+  normalizeMatterLogEntries,
+  normalizeMatterWorkItems,
+  syncCaseMatterUpdateForProject,
+} from "../lib/caseMatters";
+import { isDemoBudgetError } from "../lib/demoUsage";
 
 export const projectsRouter = Router();
 const ALLOWED_TYPES = new Set(["pdf", "docx", "doc"]);
+
+function caseErrorDetail(err: unknown) {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function caseErrorStatus(err: unknown, fallback = 502) {
+  return isDemoBudgetError(err) ? 402 : fallback;
+}
+
+function arrayBufferCopy(bytes: Buffer): ArrayBuffer {
+  return new Uint8Array(bytes).buffer as ArrayBuffer;
+}
 
 // GET /projects
 projectsRouter.get("/", requireAuth, async (req, res) => {
@@ -46,6 +68,15 @@ projectsRouter.get("/", requireAuth, async (req, res) => {
 
   const result = await Promise.all(
     projects.map(async (p) => {
+      const projectWithMatter =
+        p.case_matter_id || p.is_owner === false
+          ? p
+          : await ensureCaseMatterForProject({ db, project: p as any }).catch(
+              (err) => {
+                console.error("[case-matters] lazy matter migration failed", err);
+                return p;
+              },
+            );
       const [docs, chats, reviews] = await Promise.all([
         db
           .from("documents")
@@ -61,7 +92,7 @@ projectsRouter.get("/", requireAuth, async (req, res) => {
           .eq("project_id", p.id),
       ]);
       return {
-        ...p,
+        ...projectWithMatter,
         is_owner: p.user_id === userId,
         document_count: docs.count ?? 0,
         chat_count: chats.count ?? 0,
@@ -75,27 +106,40 @@ projectsRouter.get("/", requireAuth, async (req, res) => {
 // POST /projects
 projectsRouter.post("/", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
-  const { name, cm_number, shared_with } = req.body as {
+  const { name, cm_number, shared_with, practice_area, matter_type, client_name, responsible_attorney } = req.body as {
     name: string;
     cm_number?: string;
     shared_with?: string[];
+    practice_area?: string;
+    matter_type?: string;
+    client_name?: string;
+    responsible_attorney?: string;
   };
   if (!name?.trim())
     return void res.status(400).json({ detail: "name is required" });
 
   const db = createServerDb();
-  const { data, error } = await db
-    .from("projects")
-    .insert({
-      user_id: userId,
-      name: name.trim(),
-      cm_number: cm_number ?? null,
-      shared_with: shared_with ?? [],
-    })
-    .select("*")
-    .single();
-  if (error) return void res.status(500).json({ detail: error.message });
-  res.status(201).json({ ...data, documents: [] });
+  try {
+    const data = await createMatterBackedProject({
+      db,
+      userId,
+      input: {
+        name,
+        cm_number: cm_number ?? null,
+        shared_with: shared_with ?? [],
+        practice_area: practice_area ?? null,
+        matter_type: matter_type ?? null,
+        client_name: client_name ?? null,
+        responsible_attorney: responsible_attorney ?? null,
+      },
+    });
+    res.status(201).json({ ...data, documents: [] });
+  } catch (err) {
+    res.status(caseErrorStatus(err)).json({
+      detail: `Failed to create Case.dev matter: ${caseErrorDetail(err)}`,
+      ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
+    });
+  }
 });
 
 // GET /projects/:projectId
@@ -121,6 +165,15 @@ projectsRouter.get("/:projectId", requireAuth, async (req, res) => {
   if (!canAccess)
     return void res.status(404).json({ detail: "Project not found" });
 
+  const projectWithMatter = project.case_matter_id
+    ? project
+    : await ensureCaseMatterForProject({ db, project: project as any }).catch(
+        (err) => {
+          console.error("[case-matters] lazy matter migration failed", err);
+          return project;
+        },
+      );
+
   const [{ data: docs }, { data: folderData }] = await Promise.all([
     db.from("documents").select("*").eq("project_id", projectId).order("created_at", { ascending: true }),
     db.from("project_subfolders").select("*").eq("project_id", projectId).order("created_at", { ascending: true }),
@@ -132,7 +185,7 @@ projectsRouter.get("/:projectId", requireAuth, async (req, res) => {
   await attachLatestVersionNumbers(db, docsTyped);
   await attachActiveVersionPaths(db, docsTyped);
   res.json({
-    ...project,
+    ...projectWithMatter,
     is_owner: project.user_id === userId,
     documents: docsTyped,
     folders: folderData ?? [],
@@ -227,13 +280,192 @@ projectsRouter.get("/:projectId/people", requireAuth, async (req, res) => {
   res.json({ owner, members });
 });
 
+// GET /projects/:projectId/matter-log — Case matter log plus lightweight Mike events.
+projectsRouter.get("/:projectId/matter-log", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const userEmail = res.locals.userEmail as string | undefined;
+  const { projectId } = req.params;
+  const db = createServerDb();
+  const access = await checkProjectAccess(projectId, userId, userEmail, db);
+  if (!access.ok) return void res.status(404).json({ detail: "Matter not found" });
+
+  try {
+    const { client, matterId } = await caseMatterClientForProject({ db, projectId });
+    const caseLogs = normalizeMatterLogEntries(
+      await client.listMatterLogEntries(matterId),
+    ).map((entry) => ({ source: "case", ...entry }));
+    const [{ data: docs }, { data: chats }] = await Promise.all([
+      db
+        .from("documents")
+        .select("id, filename, status, created_at, updated_at")
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: false })
+        .limit(25),
+      db
+        .from("chats")
+        .select("id, title, created_at")
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: false })
+        .limit(25),
+    ]);
+    const mikeEvents = [
+      ...((docs ?? []) as any[]).map((doc) => ({
+        source: "mike",
+        id: `doc-${doc.id}`,
+        event_type: "mike.document",
+        summary: `Document ${doc.status === "ready" ? "ready" : doc.status}: ${doc.filename}`,
+        created_at: doc.updated_at ?? doc.created_at,
+        details: { document_id: doc.id, filename: doc.filename, status: doc.status },
+      })),
+      ...((chats ?? []) as any[]).map((chat) => ({
+        source: "mike",
+        id: `chat-${chat.id}`,
+        event_type: "mike.chat",
+        summary: `Chat created: ${chat.title ?? "Untitled Chat"}`,
+        created_at: chat.created_at,
+        details: { chat_id: chat.id, title: chat.title },
+      })),
+    ];
+    res.json(
+      [...caseLogs, ...mikeEvents].sort(
+        (a, b) =>
+          new Date((b as any).created_at ?? (b as any).occurred_at ?? 0).getTime() -
+          new Date((a as any).created_at ?? (a as any).occurred_at ?? 0).getTime(),
+      ),
+    );
+  } catch (err) {
+    res.status(caseErrorStatus(err)).json({
+      detail: caseErrorDetail(err),
+      ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
+    });
+  }
+});
+
+projectsRouter.get("/:projectId/work-items", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const userEmail = res.locals.userEmail as string | undefined;
+  const { projectId } = req.params;
+  const db = createServerDb();
+  const access = await checkProjectAccess(projectId, userId, userEmail, db);
+  if (!access.ok) return void res.status(404).json({ detail: "Matter not found" });
+  try {
+    const { client, matterId } = await caseMatterClientForProject({ db, projectId });
+    res.json(normalizeMatterWorkItems(await client.listMatterWorkItems(matterId)));
+  } catch (err) {
+    res.status(caseErrorStatus(err)).json({
+      detail: caseErrorDetail(err),
+      ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
+    });
+  }
+});
+
+projectsRouter.post("/:projectId/work-items", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const userEmail = res.locals.userEmail as string | undefined;
+  const { projectId } = req.params;
+  const db = createServerDb();
+  const access = await checkProjectAccess(projectId, userId, userEmail, db);
+  if (!access.ok) return void res.status(404).json({ detail: "Matter not found" });
+  const body = req.body as {
+    title?: string;
+    description?: string | null;
+    type?: string;
+    priority?: string;
+    instructions?: string | null;
+    due_at?: string | null;
+  };
+  if (!body.title?.trim()) {
+    return void res.status(400).json({ detail: "title is required" });
+  }
+  try {
+    const { client, matterId } = await caseMatterClientForProject({ db, projectId });
+    const item = await client.createMatterWorkItem(matterId, {
+      title: body.title.trim(),
+      description: body.description ?? null,
+      type: body.type ?? "task",
+      priority: body.priority ?? "normal",
+      instructions: body.instructions ?? null,
+      due_at: body.due_at ?? null,
+      metadata: { source: "mike", mike_project_id: projectId },
+    });
+    res.status(201).json(item);
+  } catch (err) {
+    res.status(caseErrorStatus(err)).json({
+      detail: caseErrorDetail(err),
+      ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
+    });
+  }
+});
+
+projectsRouter.patch("/:projectId/work-items/:workItemId", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const userEmail = res.locals.userEmail as string | undefined;
+  const { projectId, workItemId } = req.params;
+  const db = createServerDb();
+  const access = await checkProjectAccess(projectId, userId, userEmail, db);
+  if (!access.ok) return void res.status(404).json({ detail: "Matter not found" });
+  try {
+    const { client, matterId } = await caseMatterClientForProject({ db, projectId });
+    res.json(await client.updateMatterWorkItem(matterId, workItemId, req.body ?? {}));
+  } catch (err) {
+    res.status(caseErrorStatus(err)).json({
+      detail: caseErrorDetail(err),
+      ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
+    });
+  }
+});
+
+projectsRouter.post("/:projectId/work-items/:workItemId/decision", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const userEmail = res.locals.userEmail as string | undefined;
+  const { projectId, workItemId } = req.params;
+  const db = createServerDb();
+  const access = await checkProjectAccess(projectId, userId, userEmail, db);
+  if (!access.ok) return void res.status(404).json({ detail: "Matter not found" });
+  const decision = req.body?.decision;
+  if (!["approve", "revise", "block", "reassign"].includes(decision)) {
+    return void res.status(400).json({ detail: "decision must be approve, revise, block, or reassign" });
+  }
+  try {
+    const { client, matterId } = await caseMatterClientForProject({ db, projectId });
+    res.json(
+      await client.decideMatterWorkItem(matterId, workItemId, {
+        decision,
+        reason: req.body?.reason ?? null,
+        agent_type_id: req.body?.agent_type_id ?? null,
+        metadata: { source: "mike", mike_project_id: projectId },
+      }),
+    );
+  } catch (err) {
+    res.status(caseErrorStatus(err)).json({
+      detail: caseErrorDetail(err),
+      ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
+    });
+  }
+});
+
 // PATCH /projects/:projectId
 projectsRouter.patch("/:projectId", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const { projectId } = req.params;
+  const db = createServerDb();
+  const { data: existing } = await db
+    .from("projects")
+    .select("*")
+    .eq("id", projectId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!existing)
+    return void res.status(404).json({ detail: "Matter not found" });
+
   const updates: Record<string, unknown> = {};
   if (req.body.name != null) updates.name = req.body.name;
   if (req.body.cm_number != null) updates.cm_number = req.body.cm_number;
+  if (req.body.practice_area != null) updates.practice_area = req.body.practice_area;
+  if (req.body.matter_type != null) updates.matter_type = req.body.matter_type;
+  if (req.body.client_name != null) updates.client_name = req.body.client_name;
+  if (req.body.responsible_attorney != null) updates.responsible_attorney = req.body.responsible_attorney;
+  if (req.body.matter_status != null) updates.matter_status = req.body.matter_status;
   if (Array.isArray(req.body.shared_with)) {
     // Normalise: lowercase + dedupe + drop empties.
     const seen = new Set<string>();
@@ -248,7 +480,33 @@ projectsRouter.patch("/:projectId", requireAuth, async (req, res) => {
     updates.shared_with = cleaned;
   }
 
-  const db = createServerDb();
+  const matterUpdates: Record<string, unknown> = {};
+  for (const key of [
+    "name",
+    "cm_number",
+    "practice_area",
+    "matter_type",
+    "client_name",
+    "responsible_attorney",
+  ]) {
+    if (key in updates) matterUpdates[key] = updates[key];
+  }
+  if ("matter_status" in updates) matterUpdates.status = updates.matter_status;
+  if (Object.keys(matterUpdates).length > 0) {
+    try {
+      await syncCaseMatterUpdateForProject({
+        db,
+        project: existing as any,
+        updates: matterUpdates as any,
+      });
+    } catch (err) {
+      return void res.status(caseErrorStatus(err)).json({
+        detail: `Failed to update Case.dev matter: ${caseErrorDetail(err)}`,
+        ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
+      });
+    }
+  }
+
   const { data, error } = await db
     .from("projects")
     .update({ ...updates, updated_at: new Date().toISOString() })
@@ -257,7 +515,7 @@ projectsRouter.patch("/:projectId", requireAuth, async (req, res) => {
     .select("*")
     .single();
   if (error || !data)
-    return void res.status(404).json({ detail: "Project not found" });
+    return void res.status(404).json({ detail: "Matter not found" });
 
   const [{ data: docs }, { data: folderData }] = await Promise.all([
     db.from("documents").select("*").eq("project_id", projectId).order("created_at", { ascending: true }),
@@ -276,6 +534,21 @@ projectsRouter.delete("/:projectId", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const { projectId } = req.params;
   const db = createServerDb();
+  const { data: project } = await db
+    .from("projects")
+    .select("*")
+    .eq("id", projectId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!project) return void res.status(404).json({ detail: "Matter not found" });
+  try {
+    await archiveCaseMatterForProject({ db, project: project as any });
+  } catch (err) {
+    return void res.status(caseErrorStatus(err)).json({
+      detail: `Failed to archive Case.dev matter: ${caseErrorDetail(err)}`,
+      ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
+    });
+  }
   const { error } = await db
     .from("projects")
     .delete()
@@ -338,10 +611,22 @@ projectsRouter.post(
     // Already in this project — idempotent
     if (doc.project_id === projectId) return void res.json(doc);
 
+    const active = await loadActiveVersion(documentId, db);
+    if (doc.status !== "ready" || !active?.storage_path) {
+      return void res.status(409).json({
+        detail:
+          "Document is not ready yet and cannot be added to a matter. Re-upload it or wait for processing to finish.",
+      });
+    }
+    const filename = doc.filename as string;
+    const contentType =
+      doc.file_type === "pdf"
+        ? "application/pdf"
+        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
     if (doc.project_id === null) {
       // Standalone → project: move the current version into the project
       // owner's Case vault so project storage follows Mike's sharing model.
-      const active = await loadActiveVersion(documentId, db);
       if (active?.storage_path) {
         const sourceBytes = await downloadFile(active.storage_path, { db });
         if (!sourceBytes) {
@@ -349,11 +634,6 @@ projectsRouter.post(
             .status(500)
             .json({ detail: "Failed to read source document bytes" });
         }
-        const contentType =
-          doc.file_type === "pdf"
-            ? "application/pdf"
-            : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-        const filename = doc.filename as string;
         let projectSourcePath = storageKey(userId, documentId, filename);
         projectSourcePath = await uploadFile(projectSourcePath, sourceBytes, contentType, {
           db,
@@ -438,6 +718,12 @@ projectsRouter.post(
       // underlying storage objects so each project's copy is fully
       // independent (edits/version bumps on one don't leak into the
       // other).
+      const srcBytes = await downloadFile(active.storage_path, { db });
+      if (!srcBytes) {
+        return void res
+          .status(500)
+          .json({ detail: "Failed to read source document bytes" });
+      }
       const { data: copy, error } = await db
         .from("documents")
         .insert({
@@ -456,26 +742,7 @@ projectsRouter.post(
         return void res.status(500).json({ detail: "Failed to copy document" });
 
       let copyVersionRowId: string | null = null;
-      if (doc.current_version_id) {
-        const { data: srcV } = await db
-          .from("document_versions")
-          .select(
-            "storage_path, pdf_storage_path, version_number, display_name, source",
-          )
-          .eq("id", doc.current_version_id)
-          .single();
-        if (srcV?.storage_path) {
-          const srcBytes = await downloadFile(srcV.storage_path, { db });
-          if (!srcBytes) {
-            return void res
-              .status(500)
-              .json({ detail: "Failed to read source document bytes" });
-          }
           let newKey = storageKey(userId, copy.id as string, doc.filename);
-          const contentType =
-            doc.file_type === "pdf"
-              ? "application/pdf"
-              : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
           newKey = await uploadFile(newKey, srcBytes, contentType, {
             db,
             userId,
@@ -491,11 +758,11 @@ projectsRouter.post(
           // copy that too if it exists so the copy renders without going
           // back through libreoffice.
           let newPdfPath: string | null = null;
-          if (srcV.pdf_storage_path) {
-            if (srcV.pdf_storage_path === srcV.storage_path || doc.file_type === "pdf") {
+          if (active.pdf_storage_path) {
+            if (active.pdf_storage_path === active.storage_path || doc.file_type === "pdf") {
               newPdfPath = newKey;
             } else {
-              const pdfBytes = await downloadFile(srcV.pdf_storage_path, { db });
+              const pdfBytes = await downloadFile(active.pdf_storage_path, { db });
               if (pdfBytes) {
                 let newPdfKey = convertedPdfKey(userId, copy.id as string);
                 newPdfKey = await uploadFile(newPdfKey, pdfBytes, "application/pdf", {
@@ -518,9 +785,9 @@ projectsRouter.post(
               document_id: copy.id,
               storage_path: newKey,
               pdf_storage_path: newPdfPath,
-              source: (srcV.source as string | null) ?? "upload",
-              version_number: srcV.version_number ?? 1,
-              display_name: srcV.display_name ?? doc.filename,
+              source: active.source ?? "upload",
+              version_number: active.version_number ?? 1,
+              display_name: active.display_name ?? doc.filename,
             })
             .select("id")
             .single();
@@ -554,8 +821,6 @@ projectsRouter.post(
               }).catch((err) => console.error("[case-sync] copied PDF link failed", err));
             }
           }
-        }
-      }
       return void res.status(201).json(copy);
     }
   },
@@ -754,11 +1019,8 @@ export async function handleDocumentUpload(
       suffix === "pdf"
         ? "application/pdf"
         : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    const rawBuf = content.buffer.slice(
-      content.byteOffset,
-      content.byteOffset + content.byteLength,
-    ) as ArrayBuffer;
-    key = await uploadFile(key, rawBuf, contentType, {
+    const sourceBytes = Buffer.from(content);
+    key = await uploadFile(key, sourceBytes, contentType, {
       db,
       userId,
       projectId,
@@ -768,21 +1030,23 @@ export async function handleDocumentUpload(
       autoIndex: true,
     });
 
-    const tree = await extractStructureTree(rawBuf, suffix, filename);
-    const pageCount = suffix === "pdf" ? await countPdfPages(rawBuf) : null;
+    const tree = await extractStructureTree(
+      arrayBufferCopy(sourceBytes),
+      suffix,
+      filename,
+    );
+    const pageCount =
+      suffix === "pdf" ? await countPdfPages(arrayBufferCopy(sourceBytes)) : null;
 
     // Convert DOCX/DOC → PDF for display. PDFs are their own rendition.
     let pdfStoragePath: string | null = null;
     if (suffix === "docx" || suffix === "doc") {
       try {
-        const pdfBuf = await docxToPdf(content);
+        const pdfBuf = await docxToPdf(sourceBytes);
         let pdfKey = convertedPdfKey(userId, docId);
         pdfKey = await uploadFile(
           pdfKey,
-          pdfBuf.buffer.slice(
-            pdfBuf.byteOffset,
-            pdfBuf.byteOffset + pdfBuf.byteLength,
-          ) as ArrayBuffer,
+          Buffer.from(pdfBuf),
           "application/pdf",
           {
             db,
@@ -825,17 +1089,20 @@ export async function handleDocumentUpload(
       );
     }
 
-    await db
+    const { error: updateErr } = await db
       .from("documents")
       .update({
         current_version_id: versionRow.id,
-        size_bytes: content.byteLength,
+        size_bytes: sourceBytes.byteLength,
         page_count: pageCount,
-        structure_tree: tree ?? null,
+        structure_tree: tree ? JSON.stringify(tree) : null,
         status: "ready",
         updated_at: new Date().toISOString(),
       })
       .eq("id", docId);
+    if (updateErr) {
+      throw new Error(`Failed to update document record: ${updateErr.message}`);
+    }
 
     void syncDocumentVersionToCase({
       documentId: docId,
@@ -844,7 +1111,7 @@ export async function handleDocumentUpload(
       projectId,
       filename,
       contentType,
-      bytes: rawBuf,
+      bytes: sourceBytes,
       db,
     }).catch((err) => console.error("[case-sync] project upload failed", err));
     if (pdfStoragePath && pdfStoragePath !== key) {
@@ -877,8 +1144,11 @@ export async function handleDocumentUpload(
   } catch (e) {
     await db.from("documents").update({ status: "error" }).eq("id", doc.id);
     return void res
-      .status(500)
-      .json({ detail: `Document processing failed: ${String(e)}` });
+      .status(caseErrorStatus(e, 500))
+      .json({
+        detail: `Document processing failed: ${caseErrorDetail(e)}`,
+        ...(isDemoBudgetError(e) ? { code: "demo_budget_exceeded" } : {}),
+      });
   }
 }
 

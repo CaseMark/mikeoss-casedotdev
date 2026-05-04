@@ -1,10 +1,9 @@
 import type { createServerDb } from "./db";
 import {
-    CaseClient,
     type CaseSkillDetail,
     type CaseSkillSummary,
 } from "./caseClient";
-import { getEffectiveCaseApiKey } from "./caseCredentials";
+import { caseClientForEffectiveKey, getEffectiveCaseApiKey } from "./caseCredentials";
 
 export type WorkflowSkillFields = {
     case_skill_slug?: string | null;
@@ -81,7 +80,12 @@ export async function getCaseSkillsClient(
         throw new Error("Add a Case.dev API key with Skills access in Account > Models.");
     }
     return {
-        client: new CaseClient(effective.apiKey),
+        client: caseClientForEffectiveKey(effective, {
+            userId,
+            db,
+            service: "skills",
+            operation: "skills.catalog",
+        }),
         keySource: effective.source,
     };
 }

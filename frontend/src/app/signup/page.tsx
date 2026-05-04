@@ -9,6 +9,7 @@ import Link from "next/link";
 import { SiteLogo } from "@/components/site-logo";
 import { CheckCircle2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { PoweredByCase } from "@/app/components/shared/PoweredByCase";
 
 export default function SignupPage() {
     const router = useRouter();
@@ -111,6 +112,9 @@ export default function SignupPage() {
                         <p className="text-gray-600 leading-relaxed">
                             Redirecting you to the home page...
                         </p>
+                    </div>
+                    <div className="mt-5 flex justify-center">
+                        <PoweredByCase />
                     </div>
                 </div>
             </div>
@@ -277,6 +281,9 @@ export default function SignupPage() {
                             Privacy Policy
                         </Link>
                     </div>
+                </div>
+                <div className="mt-5 flex justify-center">
+                    <PoweredByCase />
                 </div>
             </div>
         </div>

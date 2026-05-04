@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import Link from "next/link";
 import { SiteLogo } from "@/components/site-logo";
 import { useAuth } from "@/contexts/AuthContext";
+import { PoweredByCase } from "@/app/components/shared/PoweredByCase";
 export default function LoginPage() {
     const router = useRouter();
     const { isAuthenticated, authLoading } = useAuth();
@@ -122,6 +123,9 @@ export default function LoginPage() {
                             {loading ? "Logging in..." : "Log in"}
                         </Button>
                     </form>
+                </div>
+                <div className="mt-5 flex justify-center">
+                    <PoweredByCase />
                 </div>
             </div>
         </div>

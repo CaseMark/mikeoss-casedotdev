@@ -474,15 +474,15 @@ export function TRView({ reviewId, projectId }: Props) {
                         {projectId && (
                             <>
                                 <button
-                                    onClick={() => router.push("/projects")}
+                                    onClick={() => router.push("/matters")}
                                     className="text-gray-500 hover:text-gray-700 transition-colors"
                                 >
-                                    Projects
+                                    Matters
                                 </button>
                                 <span className="text-gray-300">›</span>
                                 <button
                                     onClick={() =>
-                                        router.push(`/projects/${projectId}`)
+                                        router.push(`/matters/${projectId}`)
                                     }
                                     className="text-gray-500 hover:text-gray-700 transition-colors"
                                 >
@@ -503,7 +503,7 @@ export function TRView({ reviewId, projectId }: Props) {
                                 <button
                                     onClick={() =>
                                         router.push(
-                                            `/projects/${projectId}?tab=reviews`,
+                                            `/matters/${projectId}?tab=reviews`,
                                         )
                                     }
                                     className="text-gray-500 hover:text-gray-700 transition-colors"
@@ -776,7 +776,7 @@ export function TRView({ reviewId, projectId }: Props) {
                         handleAddDocuments(docs)
                     }
                     breadcrumb={[
-                        "Projects",
+                        "Matters",
                         project.name +
                             (project.cm_number
                                 ? ` (#${project.cm_number})`

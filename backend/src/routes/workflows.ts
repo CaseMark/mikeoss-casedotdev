@@ -9,6 +9,7 @@ import {
   skillFieldsFromDetail,
   summarizeSkill,
 } from "../lib/caseSkills";
+import { CaseApiError, type CaseSkillSummary } from "../lib/caseClient";
 
 export const workflowsRouter = Router();
 
@@ -34,6 +35,30 @@ type UserProfileRow = {
   display_name: string | null;
 };
 
+type CaseSkillListResult =
+  | {
+      skills?: CaseSkillSummary[];
+      results?: CaseSkillSummary[];
+      data?: CaseSkillSummary[];
+      next_cursor?: string | null;
+      nextCursor?: string | null;
+      has_more?: boolean;
+      hasMore?: boolean;
+    }
+  | CaseSkillSummary[];
+
+type CaseSkillFavoriteRow = {
+  skill_slug: string;
+  skill_name: string;
+  skill_summary: string | null;
+  skill_tags: unknown;
+  skill_source: string | null;
+  skill_version: string | null;
+  skill_author_name: string | null;
+  skill_license: string | null;
+  created_at: string;
+};
+
 type WorkflowAccess =
   | {
       workflow: WorkflowRecord;
@@ -41,6 +66,73 @@ type WorkflowAccess =
       isOwner: boolean;
     }
   | null;
+
+function asSkillList(result: CaseSkillListResult) {
+  if (Array.isArray(result)) {
+    return { skills: result, next_cursor: null, has_more: false };
+  }
+  const skills = result.skills ?? result.results ?? result.data ?? [];
+  return {
+    skills,
+    next_cursor: result.next_cursor ?? result.nextCursor ?? null,
+    has_more: result.has_more ?? result.hasMore ?? false,
+  };
+}
+
+function isMissingTableError(error: { message?: string } | null | undefined) {
+  const message = error?.message ?? "";
+  return (
+    message.includes('relation "case_skill_favorites" does not exist') ||
+    message.includes("relation \"case_skill_favorites\" does not exist")
+  );
+}
+
+function favoriteRowToSkill(row: CaseSkillFavoriteRow) {
+  return {
+    slug: row.skill_slug,
+    name: row.skill_name,
+    summary: row.skill_summary ?? null,
+    tags: normalizeSkillTags(row.skill_tags),
+    score: null,
+    source:
+      row.skill_source === "custom" || row.skill_source === "curated"
+        ? row.skill_source
+        : null,
+    version: row.skill_version ?? null,
+    author_name: row.skill_author_name ?? null,
+    license: row.skill_license ?? null,
+    favorited_at: row.created_at,
+  };
+}
+
+function skillPayload(body: unknown): CaseSkillSummary | null {
+  const value =
+    body && typeof body === "object" && "skill" in body
+      ? (body as { skill?: unknown }).skill
+      : body;
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const slug = typeof raw.slug === "string" ? raw.slug.trim() : "";
+  const name = typeof raw.name === "string" ? raw.name.trim() : "";
+  if (!slug || !name) return null;
+  return {
+    slug,
+    name,
+    summary: typeof raw.summary === "string" ? raw.summary : null,
+    tags: normalizeSkillTags(raw.tags),
+    score: typeof raw.score === "number" ? raw.score : undefined,
+    source:
+      raw.source === "custom" || raw.source === "curated"
+        ? raw.source
+        : undefined,
+    version:
+      typeof raw.version === "string" || typeof raw.version === "number"
+        ? raw.version
+        : undefined,
+    author_name: typeof raw.author_name === "string" ? raw.author_name : null,
+    license: typeof raw.license === "string" ? raw.license : null,
+  };
+}
 
 function withWorkflowAccess<T extends Record<string, unknown>>(
   workflow: T,
@@ -279,6 +371,117 @@ workflowsRouter.get("/skills/custom", requireAuth, async (req, res) => {
     const detail = err instanceof Error ? err.message : String(err);
     res.status(400).json({ detail });
   }
+});
+
+// GET /workflows/skills/browse
+workflowsRouter.get("/skills/browse", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const rawLimit = typeof req.query.limit === "string" ? Number(req.query.limit) : 30;
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(100, Math.max(1, rawLimit))
+    : 30;
+  const cursor = typeof req.query.cursor === "string" ? req.query.cursor : null;
+  const db = createServerDb();
+  try {
+    const { client, keySource } = await getCaseSkillsClient(userId, db);
+    let result: ReturnType<typeof asSkillList>;
+    try {
+      result = asSkillList(await client.listSkills({ limit, cursor }));
+    } catch (err) {
+      if (!(err instanceof CaseApiError && err.status === 405)) throw err;
+      const fallback = await client.searchSkills({
+        query: "litigation workflow",
+        limit,
+      });
+      result = {
+        skills: fallback.results ?? [],
+        next_cursor: null,
+        has_more: false,
+      };
+    }
+    res.json({
+      key_source: keySource,
+      skills: result.skills.map(summarizeSkill),
+      next_cursor: result.next_cursor,
+      has_more: result.has_more,
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ detail });
+  }
+});
+
+// GET /workflows/skills/favorites
+workflowsRouter.get("/skills/favorites", requireAuth, async (_req, res) => {
+  const userId = res.locals.userId as string;
+  const db = createServerDb();
+  const { data, error } = await db
+    .from("case_skill_favorites")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+  if (isMissingTableError(error)) {
+    return void res.json({ favorites: [] });
+  }
+  if (error) return void res.status(500).json({ detail: error.message });
+  res.json({
+    favorites: ((data ?? []) as CaseSkillFavoriteRow[]).map(favoriteRowToSkill),
+  });
+});
+
+// POST /workflows/skills/favorites
+workflowsRouter.post("/skills/favorites", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const skill = skillPayload(req.body);
+  if (!skill) {
+    return void res
+      .status(400)
+      .json({ detail: "skill with slug and name is required" });
+  }
+
+  const db = createServerDb();
+  const { data, error } = await db
+    .from("case_skill_favorites")
+    .upsert(
+      {
+        user_id: userId,
+        skill_slug: skill.slug,
+        skill_name: skill.name,
+        skill_summary: skill.summary ?? null,
+        skill_tags: normalizeSkillTags(skill.tags),
+        skill_source: skill.source ?? null,
+        skill_version:
+          skill.version === undefined || skill.version === null
+            ? null
+            : String(skill.version),
+        skill_author_name: skill.author_name ?? null,
+        skill_license: skill.license ?? null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id,skill_slug" },
+    )
+    .select("*")
+    .single();
+  if (error || !data) {
+    return void res
+      .status(500)
+      .json({ detail: error?.message ?? "Failed to favorite skill" });
+  }
+  res.status(201).json(favoriteRowToSkill(data as CaseSkillFavoriteRow));
+});
+
+// DELETE /workflows/skills/favorites/:slug
+workflowsRouter.delete("/skills/favorites/:slug", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const { slug } = req.params;
+  const db = createServerDb();
+  const { error } = await db
+    .from("case_skill_favorites")
+    .delete()
+    .eq("user_id", userId)
+    .eq("skill_slug", slug);
+  if (error) return void res.status(500).json({ detail: error.message });
+  res.status(204).send();
 });
 
 // GET /workflows/skills/:slug

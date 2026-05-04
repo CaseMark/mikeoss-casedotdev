@@ -8,13 +8,19 @@ import {
     Loader2,
     Search,
     Sparkles,
+    Star,
     X,
 } from "lucide-react";
 import {
+    browseCaseSkills,
+    favoriteCaseSkill,
     getCaseSkill,
+    listFavoriteCaseSkills,
     listCustomCaseSkills,
     searchCaseSkills,
+    unfavoriteCaseSkill,
     type CaseSkillDetail,
+    type CaseSkillFavorite,
     type CaseSkillSummary,
 } from "@/app/lib/mikeApi";
 import type { MikeWorkflow } from "../shared/types";
@@ -22,6 +28,7 @@ import { useRouter } from "next/navigation";
 
 const MIN_SEARCH_LENGTH = 2;
 const SEARCH_LIMIT = 16;
+const BROWSE_LIMIT = 30;
 
 type SourceFilter = "all" | "case" | "custom";
 
@@ -125,6 +132,44 @@ function SkillTags({ tags, limit = 5 }: { tags: string[]; limit?: number }) {
     );
 }
 
+function FavoriteButton({
+    active,
+    busy,
+    onClick,
+    className = "",
+}: {
+    active: boolean;
+    busy?: boolean;
+    onClick: () => void;
+    className?: string;
+}) {
+    return (
+        <button
+            type="button"
+            aria-label={active ? "Unfavorite skill" : "Favorite skill"}
+            title={active ? "Unfavorite skill" : "Favorite skill"}
+            onClick={(event) => {
+                event.stopPropagation();
+                onClick();
+            }}
+            disabled={busy}
+            className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-300 transition-colors hover:bg-gray-100 hover:text-amber-500 disabled:opacity-50 ${
+                active ? "text-amber-500" : ""
+            } ${className}`}
+        >
+            {busy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+                <Star
+                    className={`h-3.5 w-3.5 ${
+                        active ? "fill-amber-400" : ""
+                    }`}
+                />
+            )}
+        </button>
+    );
+}
+
 function AccessCallout({ message }: { message: string }) {
     const router = useRouter();
     return (
@@ -150,8 +195,11 @@ function SkillPreviewPanel({
     error,
     mode,
     creating,
+    favoriteBusy,
+    isFavorite,
     onCreateWorkflow,
     onOpenWorkflow,
+    onToggleFavorite,
 }: {
     skill: CaseSkillSummary | null;
     detail: CaseSkillDetail | null;
@@ -160,8 +208,11 @@ function SkillPreviewPanel({
     error?: string;
     mode: "catalog" | "picker";
     creating?: boolean;
+    favoriteBusy?: boolean;
+    isFavorite?: boolean;
     onCreateWorkflow?: (skill: CaseSkillSummary) => Promise<void> | void;
     onOpenWorkflow?: (workflow: MikeWorkflow) => void;
+    onToggleFavorite?: (skill: CaseSkillSummary) => Promise<void> | void;
 }) {
     if (!skill) {
         return (
@@ -201,12 +252,23 @@ function SkillPreviewPanel({
                             )}
                         </div>
                     </div>
-                    {mode === "picker" && (
-                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
-                            <Check className="h-3 w-3" />
-                            Selected
-                        </span>
-                    )}
+                    <div className="flex shrink-0 items-center gap-1.5">
+                        {mode === "catalog" && onToggleFavorite && (
+                            <FavoriteButton
+                                active={!!isFavorite}
+                                busy={favoriteBusy}
+                                onClick={() => {
+                                    void onToggleFavorite(skill);
+                                }}
+                            />
+                        )}
+                        {mode === "picker" && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
+                                <Check className="h-3 w-3" />
+                                Selected
+                            </span>
+                        )}
+                    </div>
                 </div>
                 {skill.summary && (
                     <p className="mt-2 text-xs leading-relaxed text-gray-500">
@@ -281,15 +343,20 @@ export function CaseSkillsCatalog({
     const [query, setQuery] = useState("");
     const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
     const [customSkills, setCustomSkills] = useState<CaseSkillSummary[]>([]);
+    const [browsedSkills, setBrowsedSkills] = useState<CaseSkillSummary[]>([]);
+    const [favoriteSkills, setFavoriteSkills] = useState<CaseSkillFavorite[]>([]);
     const [searchResults, setSearchResults] = useState<CaseSkillSummary[]>([]);
     const [selectedSkill, setSelectedSkill] = useState<CaseSkillSummary | null>(null);
     const [selectedDetail, setSelectedDetail] = useState<CaseSkillDetail | null>(null);
     const [customLoading, setCustomLoading] = useState(false);
+    const [browseLoading, setBrowseLoading] = useState(false);
+    const [favoritesLoading, setFavoritesLoading] = useState(false);
     const [searchLoading, setSearchLoading] = useState(false);
     const [detailLoading, setDetailLoading] = useState(false);
     const [error, setError] = useState("");
     const [detailError, setDetailError] = useState("");
     const [creatingSlug, setCreatingSlug] = useState<string | null>(null);
+    const [favoriteBusySlug, setFavoriteBusySlug] = useState<string | null>(null);
 
     const importedBySlug = useMemo(() => {
         const map = new Map<string, MikeWorkflow>();
@@ -309,18 +376,66 @@ export function CaseSkillsCatalog({
         [importedWorkflows],
     );
 
+    const favoriteBySlug = useMemo(() => {
+        const map = new Map<string, CaseSkillFavorite>();
+        for (const skill of favoriteSkills) {
+            map.set(skill.slug, skill);
+        }
+        return map;
+    }, [favoriteSkills]);
+
     useEffect(() => {
+        let cancelled = false;
         setCustomLoading(true);
-        listCustomCaseSkills({ limit: 50 })
-            .then((response) => {
-                setCustomSkills(response.skills);
-                setError("");
+        setBrowseLoading(true);
+        setFavoritesLoading(true);
+
+        Promise.allSettled([
+            listCustomCaseSkills({ limit: 50 }),
+            browseCaseSkills({ limit: BROWSE_LIMIT }),
+            listFavoriteCaseSkills(),
+        ])
+            .then(([custom, browsed, favorites]) => {
+                if (cancelled) return;
+
+                if (custom.status === "fulfilled") {
+                    setCustomSkills(custom.value.skills);
+                } else {
+                    setCustomSkills([]);
+                }
+
+                if (browsed.status === "fulfilled") {
+                    setBrowsedSkills(browsed.value.skills);
+                } else {
+                    setBrowsedSkills([]);
+                }
+
+                if (favorites.status === "fulfilled") {
+                    setFavoriteSkills(favorites.value.favorites);
+                } else {
+                    setFavoriteSkills([]);
+                }
+
+                const failed = [custom, browsed, favorites].find(
+                    (result) => result.status === "rejected",
+                );
+                setError(
+                    failed?.status === "rejected"
+                        ? (failed.reason as Error).message ||
+                              "Failed to load Case.dev skills"
+                        : "",
+                );
             })
-            .catch((err: unknown) => {
-                setCustomSkills([]);
-                setError((err as Error).message || "Failed to load Case.dev skills");
-            })
-            .finally(() => setCustomLoading(false));
+            .finally(() => {
+                if (cancelled) return;
+                setCustomLoading(false);
+                setBrowseLoading(false);
+                setFavoritesLoading(false);
+            });
+
+        return () => {
+            cancelled = true;
+        };
     }, []);
 
     useEffect(() => {
@@ -350,26 +465,56 @@ export function CaseSkillsCatalog({
 
     useEffect(() => {
         if (!selectedSlug || selectedSkill?.slug === selectedSlug) return;
-        const match = mergeSkills(searchResults, customSkills, importedSkills).find(
-            (skill) => skill.slug === selectedSlug,
-        );
+        const match = mergeSkills(
+            favoriteSkills,
+            searchResults,
+            browsedSkills,
+            customSkills,
+            importedSkills,
+        ).find((skill) => skill.slug === selectedSlug);
         if (match) void selectSkill(match);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedSlug, searchResults, customSkills, importedSkills]);
+    }, [
+        selectedSlug,
+        favoriteSkills,
+        searchResults,
+        browsedSkills,
+        customSkills,
+        importedSkills,
+    ]);
 
     const q = query.trim();
     const displaySkills = useMemo(() => {
         const base =
             q.length >= MIN_SEARCH_LENGTH
-                ? mergeSkills(searchResults, customSkills.filter((skill) => filteredByQuery(skill, q)), importedSkills.filter((skill) => filteredByQuery(skill, q)))
-                : mergeSkills(customSkills, importedSkills);
+                ? mergeSkills(
+                      searchResults,
+                      favoriteSkills.filter((skill) => filteredByQuery(skill, q)),
+                      customSkills.filter((skill) => filteredByQuery(skill, q)),
+                      importedSkills.filter((skill) => filteredByQuery(skill, q)),
+                  )
+                : mergeSkills(
+                      favoriteSkills,
+                      browsedSkills,
+                      customSkills,
+                      importedSkills,
+                  );
         return base.filter((skill) => filterBySource(skill, sourceFilter));
-    }, [customSkills, importedSkills, q, searchResults, sourceFilter]);
+    }, [
+        browsedSkills,
+        customSkills,
+        favoriteSkills,
+        importedSkills,
+        q,
+        searchResults,
+        sourceFilter,
+    ]);
 
     const selectedImportedWorkflow = selectedSkill
         ? importedBySlug.get(selectedSkill.slug)
         : undefined;
-    const listLoading = customLoading || searchLoading;
+    const listLoading =
+        customLoading || browseLoading || favoritesLoading || searchLoading;
     const showSearchHint = q.length > 0 && q.length < MIN_SEARCH_LENGTH;
 
     async function selectSkill(skill: CaseSkillSummary) {
@@ -413,6 +558,41 @@ export function CaseSkillsCatalog({
         }
     }
 
+    async function handleToggleFavorite(skill: CaseSkillSummary) {
+        const wasFavorite = favoriteBySlug.has(skill.slug);
+        const previous = favoriteSkills;
+        setFavoriteBusySlug(skill.slug);
+        setError("");
+        setFavoriteSkills((current) =>
+            wasFavorite
+                ? current.filter((item) => item.slug !== skill.slug)
+                : [
+                      {
+                          ...skill,
+                          favorited_at: new Date().toISOString(),
+                      },
+                      ...current.filter((item) => item.slug !== skill.slug),
+                  ],
+        );
+
+        try {
+            if (wasFavorite) {
+                await unfavoriteCaseSkill(skill.slug);
+            } else {
+                const favorite = await favoriteCaseSkill(skill);
+                setFavoriteSkills((current) => [
+                    favorite,
+                    ...current.filter((item) => item.slug !== favorite.slug),
+                ]);
+            }
+        } catch (err: unknown) {
+            setFavoriteSkills(previous);
+            setError((err as Error).message || "Failed to update favorite");
+        } finally {
+            setFavoriteBusySlug(null);
+        }
+    }
+
     const sourceButtons: { id: SourceFilter; label: string }[] = [
         { id: "all", label: "All" },
         { id: "case", label: "Case" },
@@ -421,7 +601,7 @@ export function CaseSkillsCatalog({
 
     return (
         <div
-            className={`flex min-h-0 flex-col ${
+            className={`flex min-h-0 flex-col overflow-hidden ${
                 mode === "catalog" ? "h-full" : ""
             } ${className}`}
         >
@@ -477,16 +657,16 @@ export function CaseSkillsCatalog({
             </div>
 
             <div
-                className={`grid min-h-0 flex-1 gap-3 p-3 ${
+                className={`grid min-h-0 flex-1 overflow-hidden gap-3 p-3 ${
                     mode === "catalog"
-                        ? "lg:grid-cols-[minmax(280px,380px)_minmax(0,1fr)]"
+                        ? "grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(280px,380px)_minmax(0,1fr)] lg:grid-rows-1"
                         : "grid-cols-1"
                 }`}
             >
-                <div className="min-h-0 overflow-hidden rounded-md border border-gray-200 bg-white">
+                <div className="flex min-h-0 flex-col overflow-hidden rounded-md border border-gray-200 bg-white">
                     <div
-                        className={`overflow-y-auto ${
-                            mode === "catalog" ? "h-full" : "max-h-52"
+                        className={`min-h-0 overscroll-contain ${
+                            mode === "catalog" ? "flex-1 overflow-y-auto" : "max-h-52 overflow-y-auto"
                         }`}
                     >
                         {listLoading && displaySkills.length === 0 ? (
@@ -514,11 +694,23 @@ export function CaseSkillsCatalog({
                             displaySkills.map((skill) => {
                                 const imported = importedBySlug.get(skill.slug);
                                 const selected = selectedSkill?.slug === skill.slug;
+                                const favorite = favoriteBySlug.has(skill.slug);
+                                const favoriteBusy = favoriteBusySlug === skill.slug;
                                 return (
-                                    <button
+                                    <div
                                         key={skill.slug}
-                                        type="button"
+                                        role="button"
+                                        tabIndex={0}
                                         onClick={() => selectSkill(skill)}
+                                        onKeyDown={(event) => {
+                                            if (
+                                                event.key === "Enter" ||
+                                                event.key === " "
+                                            ) {
+                                                event.preventDefault();
+                                                void selectSkill(skill);
+                                            }
+                                        }}
                                         className={`w-full border-b border-gray-100 px-3 py-3 text-left transition-colors last:border-b-0 ${
                                             selected ? "bg-gray-50" : "hover:bg-gray-50"
                                         }`}
@@ -541,12 +733,22 @@ export function CaseSkillsCatalog({
                                                     </p>
                                                 )}
                                             </div>
-                                            <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-gray-400">
-                                                {sourceLabel(skill)}
-                                            </span>
+                                            <div className="flex shrink-0 items-center gap-1.5">
+                                                <span className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
+                                                    {sourceLabel(skill)}
+                                                </span>
+                                                <FavoriteButton
+                                                    active={favorite}
+                                                    busy={favoriteBusy}
+                                                    onClick={() => {
+                                                        void handleToggleFavorite(skill);
+                                                    }}
+                                                    className="-mr-1"
+                                                />
+                                            </div>
                                         </div>
                                         <SkillTags tags={skill.tags} />
-                                    </button>
+                                    </div>
                                 );
                             })
                         )}
@@ -561,8 +763,13 @@ export function CaseSkillsCatalog({
                     error={detailError}
                     mode={mode}
                     creating={creatingSlug === selectedSkill?.slug}
+                    favoriteBusy={favoriteBusySlug === selectedSkill?.slug}
+                    isFavorite={
+                        selectedSkill ? favoriteBySlug.has(selectedSkill.slug) : false
+                    }
                     onCreateWorkflow={handleCreateWorkflow}
                     onOpenWorkflow={onOpenWorkflow}
+                    onToggleFavorite={handleToggleFavorite}
                 />
             </div>
         </div>

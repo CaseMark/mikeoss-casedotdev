@@ -14,9 +14,11 @@ import {
     updateUserProfile,
     getCaseModelCatalog,
     getCaseApiKeyStatus,
+    getDemoUsage,
     saveCaseApiKey,
     type CaseModelCatalog,
     type CaseApiKeyStatus,
+    type DemoUsageStatus,
 } from "@/app/lib/mikeApi";
 import {
     FALLBACK_CASE_MODELS,
@@ -34,6 +36,8 @@ const DEFAULT_CASE_KEY_STATUS: CaseApiKeyStatus = {
         llm: false,
         vault: false,
         skills: false,
+        matters: false,
+        legal: false,
         model_count: null,
     },
     error: null,
@@ -43,6 +47,16 @@ const DEFAULT_CASE_MODEL_CATALOG: CaseModelCatalog = {
     source: "fallback",
     key_source: "missing",
     models: FALLBACK_CASE_MODELS,
+};
+
+const DEFAULT_DEMO_USAGE: DemoUsageStatus = {
+    enabled: false,
+    limit_usd: 0,
+    spent_usd: 0,
+    reserved_usd: 0,
+    remaining_usd: 0,
+    blocked: false,
+    global_remaining_usd: null,
 };
 
 interface UserProfile {
@@ -56,6 +70,7 @@ interface UserProfile {
     caseApiKey: CaseApiKeyStatus;
     caseModels: ModelOption[];
     caseModelCatalog: Omit<CaseModelCatalog, "models">;
+    demoUsage: DemoUsageStatus;
 }
 
 interface UserProfileContextType {
@@ -93,6 +108,9 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
             );
             const caseCatalog = await getCaseModelCatalog().catch(
                 () => DEFAULT_CASE_MODEL_CATALOG,
+            );
+            const demoUsage = await getDemoUsage().catch(
+                () => DEFAULT_DEMO_USAGE,
             );
             const caseModels = caseCatalog.models.length
                 ? caseCatalog.models
@@ -136,6 +154,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                     caseApiKey,
                     caseModels,
                     caseModelCatalog,
+                    demoUsage,
                 });
 
                 // 2. Update database in background if needed
@@ -168,6 +187,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                     source: "fallback",
                     key_source: "missing",
                 },
+                demoUsage: DEFAULT_DEMO_USAGE,
             });
         } finally {
             setLoading(false);
@@ -250,6 +270,9 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 const catalog = await getCaseModelCatalog().catch(
                     () => DEFAULT_CASE_MODEL_CATALOG,
                 );
+                const demoUsage = await getDemoUsage().catch(
+                    () => DEFAULT_DEMO_USAGE,
+                );
                 setProfile((prev) =>
                     prev
                         ? {
@@ -263,6 +286,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                                   key_source: catalog.key_source,
                                   error: catalog.error,
                               },
+                              demoUsage,
                           }
                         : null,
                 );

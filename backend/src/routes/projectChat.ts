@@ -13,14 +13,15 @@ import {
 } from "../lib/chatTools";
 import { getUserApiKeys } from "../lib/userSettings";
 import { checkProjectAccess } from "../lib/access";
+import { demoBudgetErrorPayload, isDemoBudgetError } from "../lib/demoUsage";
 
-const PROJECT_SYSTEM_PROMPT_EXTRA = `PROJECT CONTEXT:
-You are operating within a project folder that contains a collection of legal documents the user has organised for a single matter. The user's questions will usually refer to one or more documents in this project — your job is to find the relevant files to work on. Use list_documents to see what is available, search_documents to locate relevant passages across the project, and fetch_documents / read_document to pull in any documents you need before answering.
+const PROJECT_SYSTEM_PROMPT_EXTRA = `MATTER CONTEXT:
+You are operating within a Case.dev Matter that contains a collection of legal documents in its primary Vault. The user's questions will usually refer to one or more documents in this matter — your job is to find the relevant files to work on. Use list_vault_documents to inspect processing/search readiness, list_documents to see local document handles, search_documents to locate relevant passages across the matter, and get_document_context / fetch_documents / read_document to pull in any context you need before answering.
 
-A document may currently be displayed in the user's side panel; when provided, treat it as context for the user's likely focus, but do NOT assume it is the only or definitive document the user is asking about. If the request could apply to other files in the project, identify and read those as well. Prefer coverage across the relevant project documents over an over-narrow reading of only the displayed one.
+A document may currently be displayed in the user's side panel; when provided, treat it as context for the user's likely focus, but do NOT assume it is the only or definitive document the user is asking about. If the request could apply to other files in the matter, identify and read those as well. Prefer coverage across the relevant matter documents over an over-narrow reading of only the displayed one.
 
 REPLICATING A DOCUMENT:
-When the user wants to use an existing project document as a starting point for a new file (e.g. "use this NDA as a template", "make me a copy of the SOW so I can edit it", "duplicate this and adapt it for company X"), call the replicate_document tool with the source doc_id. This creates a byte-for-byte copy as a new project document, returns a fresh doc_id slug, and shows a download/open card in the UI. Then call edit_document on the returned slug to make the user's requested changes — do NOT call generate_docx for cases where the user clearly wants the existing document's structure and formatting preserved.`;
+When the user wants to use an existing matter document as a starting point for a new file (e.g. "use this NDA as a template", "make me a copy of the SOW so I can edit it", "duplicate this and adapt it for company X"), call the replicate_document tool with the source doc_id. This creates a byte-for-byte copy as a new matter document, returns a fresh doc_id slug, and shows a download/open card in the UI. Then call edit_document on the returned slug to make the user's requested changes — do NOT call generate_docx for cases where the user clearly wants the existing document's structure and formatting preserved.`;
 
 export const projectChatRouter = Router({ mergeParams: true });
 
@@ -188,9 +189,10 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
     } catch (err) {
         console.error("[project-chat/stream] error:", err);
         try {
-            write(
-                `data: ${JSON.stringify({ type: "error", message: "Stream error" })}\n\n`,
-            );
+            const payload = isDemoBudgetError(err)
+                ? demoBudgetErrorPayload(err)
+                : { type: "error", message: "Stream error" };
+            write(`data: ${JSON.stringify(payload)}\n\n`);
             write("data: [DONE]\n\n");
         } catch {
             /* ignore */

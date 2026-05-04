@@ -15,11 +15,14 @@ import {
 import { buildDownloadUrl } from "./downloadTokens";
 import { attachActiveVersionPaths, loadActiveVersion } from "./documentVersions";
 import {
+    getCaseDocumentContext,
     getCaseTextForDocument,
+    listCaseVaultDocuments,
     registerCaseStoredObject,
     searchCaseDocuments,
     syncDocumentVersionToCase,
 } from "./caseSync";
+import type { CaseVaultSearchMethod } from "./caseClient";
 import {
     composeWorkflowPrompt,
     getCaseSkillsClient,
@@ -27,6 +30,7 @@ import {
     serializeSkill,
     summarizeSkill,
 } from "./caseSkills";
+import { caseClientForEffectiveKey, getEffectiveCaseApiKey } from "./caseCredentials";
 import {
     streamChatWithTools,
     resolveModel,
@@ -34,6 +38,7 @@ import {
     type LlmMessage,
     type OpenAIToolSchema,
 } from "./llm";
+import { CaseApiError, CaseClient } from "./caseClient";
 
 const STANDARD_FONT_DATA_URL = (() => {
     try {
@@ -111,7 +116,7 @@ After your complete response, append a <CITATIONS> block containing a JSON array
 <CITATIONS>
 [
   {"ref": 1, "doc_id": "doc-0", "page": 3, "quote": "exact verbatim text from the document"},
-  {"ref": 2, "doc_id": "doc-1", "page": "41-42", "quote": "Section 4.2 describes the procedure [[PAGE_BREAK]] in all material respects."}
+  {"ref": 2, "doc_id": "doc-1", "page": "41-42", "quote": "Section 4.2 describes the procedure [[PAGE_BREAK]] in all material respects.", "chunk_index": 12, "case_object_id": "obj_abc123"}
 ]
 </CITATIONS>
 
@@ -123,6 +128,7 @@ Rules:
 - Keep quotes short (ideally ≤ 25 words) and narrowly scoped to the specific claim. Don't reuse one quote to support multiple different claims — give each its own citation
 - "page" refers to the sequential [Page N] marker in the text you were given (1-indexed from the first page). IGNORE any page numbers printed inside the document itself (footers, roman numerals, etc.)
 - For a single-page quote, set "page" to an integer. If a quote is one continuous sentence that spans two pages, set "page" to "N-M" and insert [[PAGE_BREAK]] in the quote at the page break. Otherwise, use separate citations for text on different pages
+- When citing from search_documents or get_document_context results, include returned Case.dev grounding fields when available: "chunk_index", "case_object_id", "case_vault_id", "word_start_index", and "word_end_index". Do not invent these fields
 - Put the <CITATIONS> block at the very end of the response. Omit it entirely if there are no citations
 
 DOCX GENERATION:
@@ -151,6 +157,12 @@ When a user message begins with a [Workflow: <title> (id: <id>)] marker, the use
 
 CASE.DEV SKILLS:
 Case.dev skills are reusable legal work instructions that may or may not already be imported as Mike workflows. When the user asks to find, browse, reference, choose, compare, or use a skill, call search_case_skills first. If the user asks to use or apply a specific skill, call read_case_skill with the returned slug and then follow that skill's instructions for the current turn. If read_case_skill says the skill is already imported as a workflow, prefer read_workflow on that workflow_id so Mike-specific workflow overlays are included. Do not claim a Case.dev skill exists unless search_case_skills or read_case_skill returned it.
+
+CASE.DEV VAULT SEARCH:
+Matter/project documents are stored and indexed in Case.dev Vaults. For questions across many files, call list_vault_documents first when you need processing status or filenames, then search_documents. Use method "hybrid" for ordinary passage-finding, "fast" for quick similarity, "global" for corpus-wide themes or contradictions, and "local" or "entity" for questions about a named person, organization, or concept. If search returns a chunk that needs more context, call get_document_context with the returned doc_id and chunk_index before answering.
+
+CASE.DEV LEGAL RESEARCH:
+Use the legal research tools for external legal authority, citation verification, court/docket lookup, SEC filings, patents, trademarks, and other law or public-source research. Use Vault tools for uploaded matter documents and Legal tools for outside authorities; use both when a question asks you to compare matter facts against external law. External authority citations should be written in prose as canonical citations and/or Markdown links returned by the Legal tools. Do NOT put external authority citations in the <CITATIONS> JSON block, which is reserved only for Mike/Vault document citations. Never claim you performed a live PACER fetch, never ask Case.dev to incur PACER fees, and do not request docket entries unless a tool result explicitly says they are available.
 
 DOCUMENT NAMING IN PROSE:
 The chat-local labels ("doc-0", "doc-1", "doc-N", …) are internal handles for tool calls and citation JSON ONLY. NEVER write them in your prose response or in any text the user reads — not in body text, not in headings, not in lists, not in tool-activity descriptions. The user does not know what "doc-0" means and seeing it is jarring. When referring to a document in prose, always use its filename (e.g. "the NDA draft" or "nda_v1.docx"). This rule applies to every word streamed back to the user; the only places "doc-N" identifiers are allowed are inside tool-call arguments and inside the <CITATIONS> JSON block's "doc_id" field.
@@ -335,7 +347,336 @@ export const SKILL_TOOLS = [
     },
 ];
 
+export const LEGAL_TOOLS = [
+    {
+        type: "function",
+        function: {
+            name: "legal_research",
+            description:
+                "Search external legal sources using Case.dev Legal. Use mode 'find' for focused source search and 'research' for deeper research with synthesized results. Do not use for uploaded matter documents; use Vault tools for those.",
+            parameters: {
+                type: "object",
+                properties: {
+                    mode: {
+                        type: "string",
+                        enum: ["find", "research"],
+                        description:
+                            "Use 'find' for focused search and 'research' for deeper legal research. Defaults to find.",
+                    },
+                    query: {
+                        type: "string",
+                        description:
+                            "Legal research query, issue, party, case name, statute, or concept.",
+                    },
+                    additional_queries: {
+                        type: "array",
+                        items: { type: "string" },
+                        description:
+                            "Optional extra queries for deep research mode.",
+                    },
+                    jurisdiction: {
+                        type: "string",
+                        description:
+                            "Optional jurisdiction filter. Use legal_dockets with operation 'resolve_jurisdiction' if unsure.",
+                    },
+                    num_results: {
+                        type: "integer",
+                        description: "Number of sources/results to return. Defaults to 10.",
+                        minimum: 1,
+                        maximum: 25,
+                    },
+                },
+                required: ["query"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "legal_source_text",
+            description:
+                "Retrieve full text or a highlighted excerpt for an external legal source URL returned by legal_research, legal_dockets, or find_similar_legal_sources.",
+            parameters: {
+                type: "object",
+                properties: {
+                    url: {
+                        type: "string",
+                        description: "The external legal source URL to retrieve.",
+                    },
+                    max_characters: {
+                        type: "integer",
+                        description:
+                            "Maximum characters to return. Defaults to the API default.",
+                        minimum: 500,
+                        maximum: 50000,
+                    },
+                    highlight_query: {
+                        type: "string",
+                        description:
+                            "Optional query to highlight relevant portions of the source.",
+                    },
+                    summary_query: {
+                        type: "string",
+                        description:
+                            "Optional question or issue for source-specific summarization.",
+                    },
+                },
+                required: ["url"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "verify_legal_citations",
+            description:
+                "Extract or verify legal citations from text, or extract citations from a URL. Use this when the user asks whether citations are real, accurate, or supported.",
+            parameters: {
+                type: "object",
+                properties: {
+                    action: {
+                        type: "string",
+                        enum: ["verify", "extract"],
+                        description:
+                            "Use verify for text citation validation and extract to only parse citations. URL inputs use Case.dev's URL citation extraction endpoint.",
+                    },
+                    text: {
+                        type: "string",
+                        description:
+                            "Text containing one or more legal citations.",
+                    },
+                    url: {
+                        type: "string",
+                        description:
+                            "URL of a legal source to extract citations from.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "find_similar_legal_sources",
+            description:
+                "Find cases or legal documents similar to an external legal source URL.",
+            parameters: {
+                type: "object",
+                properties: {
+                    url: {
+                        type: "string",
+                        description: "Source URL to find similar legal sources for.",
+                    },
+                    jurisdiction: {
+                        type: "string",
+                        description: "Optional jurisdiction filter.",
+                    },
+                    num_results: {
+                        type: "integer",
+                        description: "Number of similar sources to return. Defaults to 10.",
+                        minimum: 1,
+                        maximum: 25,
+                    },
+                    start_published_date: {
+                        type: "string",
+                        description:
+                            "Optional ISO date to find only newer sources, e.g. 2020-01-01.",
+                    },
+                },
+                required: ["url"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "legal_dockets",
+            description:
+                "Resolve jurisdictions/courts, search free federal dockets, or look up a docket by ID. Live PACER fetches and docket entry listing are disabled.",
+            parameters: {
+                type: "object",
+                properties: {
+                    operation: {
+                        type: "string",
+                        enum: [
+                            "resolve_jurisdiction",
+                            "list_courts",
+                            "search",
+                            "lookup",
+                        ],
+                        description:
+                            "Operation to perform: resolve_jurisdiction, list_courts, search dockets, or lookup a docket ID.",
+                    },
+                    name: {
+                        type: "string",
+                        description:
+                            "Jurisdiction name for resolve_jurisdiction.",
+                    },
+                    query: {
+                        type: "string",
+                        description:
+                            "Court search query or docket search query, such as a party or case name.",
+                    },
+                    jurisdiction: {
+                        type: "string",
+                        description:
+                            "Optional jurisdiction code for court lookup, e.g. FD, FA, S.",
+                    },
+                    court: {
+                        type: "string",
+                        description:
+                            "Optional court slug for docket search, e.g. cand or ca9.",
+                    },
+                    docket_id: {
+                        type: "string",
+                        description: "Docket ID for lookup.",
+                    },
+                    date_filed_after: {
+                        type: "string",
+                        description: "Optional lower filing-date bound, YYYY-MM-DD.",
+                    },
+                    date_filed_before: {
+                        type: "string",
+                        description: "Optional upper filing-date bound, YYYY-MM-DD.",
+                    },
+                    limit: {
+                        type: "integer",
+                        description: "Maximum results to return.",
+                        minimum: 1,
+                        maximum: 100,
+                    },
+                    offset: {
+                        type: "integer",
+                        description: "Pagination offset.",
+                        minimum: 0,
+                    },
+                },
+                required: ["operation"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "legal_sec_filings",
+            description:
+                "Search SEC EDGAR filings or fetch a public-company/entity filing history.",
+            parameters: {
+                type: "object",
+                properties: {
+                    type: {
+                        type: "string",
+                        enum: ["search", "entity"],
+                        description:
+                            "Run full-text filing search or fetch a single entity filing history.",
+                    },
+                    query: {
+                        type: "string",
+                        description: "Full-text SEC search query.",
+                    },
+                    form_types: {
+                        type: "array",
+                        items: { type: "string" },
+                        description:
+                            "Optional form filters, such as 10-K, 10-Q, 8-K, or 4.",
+                    },
+                    ticker: {
+                        type: "string",
+                        description: "Optional company ticker.",
+                    },
+                    entity: {
+                        type: "string",
+                        description: "Optional company/entity name.",
+                    },
+                    cik: {
+                        type: "string",
+                        description: "Optional CIK for entity lookup.",
+                    },
+                    date_after: {
+                        type: "string",
+                        description: "Optional lower filing-date bound, YYYY-MM-DD.",
+                    },
+                    date_before: {
+                        type: "string",
+                        description: "Optional upper filing-date bound, YYYY-MM-DD.",
+                    },
+                    limit: { type: "integer", minimum: 1, maximum: 100 },
+                    offset: { type: "integer", minimum: 0 },
+                },
+                required: ["type"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "legal_patent_search",
+            description:
+                "Search USPTO patent applications and grants using Case.dev Legal.",
+            parameters: {
+                type: "object",
+                properties: {
+                    query: { type: "string", description: "Patent search query." },
+                    application_status: { type: "string" },
+                    application_type: { type: "string" },
+                    assignee: { type: "string" },
+                    inventor: { type: "string" },
+                    filing_date_from: { type: "string" },
+                    filing_date_to: { type: "string" },
+                    grant_date_from: { type: "string" },
+                    grant_date_to: { type: "string" },
+                    limit: { type: "integer", minimum: 1, maximum: 100 },
+                    offset: { type: "integer", minimum: 0 },
+                    sort_by: { type: "string" },
+                    sort_order: { type: "string", enum: ["asc", "desc"] },
+                },
+                required: ["query"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "legal_trademark_lookup",
+            description:
+                "Look up USPTO trademark status and details by serial number or registration number.",
+            parameters: {
+                type: "object",
+                properties: {
+                    serial_number: {
+                        type: "string",
+                        description: "USPTO serial number.",
+                    },
+                    registration_number: {
+                        type: "string",
+                        description: "USPTO registration number.",
+                    },
+                },
+            },
+        },
+    },
+];
+
 export const TOOLS = [
+    {
+        type: "function",
+        function: {
+            name: "list_vault_documents",
+            description:
+                "List Case.dev Vault status for the documents available in this chat or matter. Use this before broad document work when you need filenames, processing status, page counts, chunk counts, graph readiness, or whether documents are searchable.",
+            parameters: {
+                type: "object",
+                properties: {
+                    doc_ids: {
+                        type: "array",
+                        items: { type: "string" },
+                        description:
+                            "Optional document IDs to inspect (e.g. ['doc-0', 'doc-2']). Omit to list all available documents.",
+                    },
+                },
+            },
+        },
+    },
     {
         type: "function",
         function: {
@@ -381,8 +722,48 @@ export const TOOLS = [
                         minimum: 1,
                         maximum: 50,
                     },
+                    method: {
+                        type: "string",
+                        enum: ["hybrid", "fast", "local", "global", "entity"],
+                        description:
+                            "Case.dev Vault search mode. Defaults to hybrid. Use global for corpus-wide synthesis and local/entity for named-person or named-entity questions.",
+                    },
                 },
                 required: ["query"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_document_context",
+            description:
+                "Retrieve exact Case.dev Vault chunks around a search result. Use this when search_documents returns a relevant chunk but you need neighboring context, page ranges, or OCR word-index metadata before answering or citing.",
+            parameters: {
+                type: "object",
+                properties: {
+                    doc_id: {
+                        type: "string",
+                        description: "Document ID returned by search_documents, e.g. 'doc-0'.",
+                    },
+                    chunk_index: {
+                        type: "integer",
+                        description: "Chunk index returned by search_documents.",
+                    },
+                    before: {
+                        type: "integer",
+                        minimum: 0,
+                        maximum: 10,
+                        description: "How many chunks before the target to include. Defaults to 1.",
+                    },
+                    after: {
+                        type: "integer",
+                        minimum: 0,
+                        maximum: 10,
+                        description: "How many chunks after the target to include. Defaults to 1.",
+                    },
+                },
+                required: ["doc_id", "chunk_index"],
             },
         },
     },
@@ -531,6 +912,11 @@ type ParsedCitation = {
     doc_id: string;
     page: number | string;
     quote: string;
+    case_vault_id?: string | null;
+    case_object_id?: string | null;
+    chunk_index?: number | null;
+    word_start_index?: number | null;
+    word_end_index?: number | null;
 };
 
 function normalizeCitation(raw: unknown): ParsedCitation | null {
@@ -548,7 +934,22 @@ function normalizeCitation(raw: unknown): ParsedCitation | null {
         if (!Number.isFinite(n)) return null;
         page = n;
     }
-    return { ref: c.ref, doc_id: c.doc_id, page, quote: c.quote };
+    return {
+        ref: c.ref,
+        doc_id: c.doc_id,
+        page,
+        quote: c.quote,
+        case_vault_id:
+            typeof c.case_vault_id === "string" ? c.case_vault_id : null,
+        case_object_id:
+            typeof c.case_object_id === "string" ? c.case_object_id : null,
+        chunk_index:
+            typeof c.chunk_index === "number" ? c.chunk_index : null,
+        word_start_index:
+            typeof c.word_start_index === "number" ? c.word_start_index : null,
+        word_end_index:
+            typeof c.word_end_index === "number" ? c.word_end_index : null,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -1760,6 +2161,85 @@ export type DocReplicatedResult = {
     }[];
 };
 
+function optionalString(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stringArray(value: unknown, max = 10): string[] | undefined {
+    if (!Array.isArray(value)) return undefined;
+    const items = value
+        .map((item) => optionalString(item))
+        .filter((item): item is string => Boolean(item))
+        .slice(0, max);
+    return items.length ? items : undefined;
+}
+
+function clampedInteger(
+    value: unknown,
+    fallback: number | undefined,
+    min: number,
+    max: number,
+): number | undefined {
+    const raw = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(raw)) return fallback;
+    return Math.max(min, Math.min(max, Math.floor(raw)));
+}
+
+function caseLegalError(err: unknown): Record<string, unknown> {
+    if (err instanceof CaseApiError) {
+        const message =
+            err.status === 401
+                ? "Case.dev API key is invalid or expired."
+                : err.status === 403
+                  ? "Case.dev API key does not include Legal API permission."
+                  : `Case.dev Legal API request failed with status ${err.status}.`;
+        return {
+            ok: false,
+            error: message,
+            status: err.status,
+            detail: err.body ? err.body.slice(0, 500) : undefined,
+        };
+    }
+    return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+    };
+}
+
+async function runCaseLegalRequest(
+    userId: string,
+    db: ReturnType<typeof createServerDb>,
+    request: (client: CaseClient) => Promise<unknown>,
+): Promise<Record<string, unknown>> {
+    const effective = await getEffectiveCaseApiKey(userId, db).catch((err) => {
+        console.error("[case-legal] failed to resolve Case key", err);
+        return null;
+    });
+    if (!effective) {
+        return {
+            ok: false,
+            error:
+                "A verified Case.dev API key with Legal API permission is required for legal research.",
+        };
+    }
+    try {
+        return {
+            ok: true,
+            key_source: effective.source,
+            result: await request(
+                caseClientForEffectiveKey(effective, {
+                    userId,
+                    db,
+                    service: "legal",
+                    operation: "legal.research",
+                }),
+            ),
+        };
+    } catch (err) {
+        return caseLegalError(err);
+    }
+}
+
 export async function runToolCalls(
     toolCalls: ToolCall[],
     docStore: DocStore,
@@ -1800,7 +2280,40 @@ export async function runToolCalls(
             /* ignore */
         }
 
-        if (tc.function.name === "read_document") {
+        if (tc.function.name === "list_vault_documents") {
+            const requested = Array.isArray(args.doc_ids)
+                ? (args.doc_ids as unknown[]).map((id) => String(id))
+                : [];
+            const labels = requested.length
+                ? requested.map((id) => resolveDocLabel(id, docStore, docIndex) ?? id)
+                : Object.keys(docIndex ?? {});
+            const documentIds = labels
+                .map((label) => docIndex?.[label]?.document_id)
+                .filter((id): id is string => typeof id === "string");
+            const labelByDocumentId = new Map<string, string>();
+            for (const [label, info] of Object.entries(docIndex ?? {})) {
+                labelByDocumentId.set(info.document_id, label);
+            }
+            const documents = await listCaseVaultDocuments({
+                documentIds,
+                projectId,
+                labelByDocumentId,
+                db,
+            });
+            toolResults.push({
+                role: "tool",
+                tool_call_id: tc.id,
+                content: JSON.stringify({
+                    count: documents.length,
+                    documents,
+                    note:
+                        documents.length === 0
+                            ? "No Case.dev Vault-linked documents are available in this scope."
+                            : undefined,
+                }),
+            });
+
+        } else if (tc.function.name === "read_document") {
             const rawDocId = args.doc_id as string;
             const docId =
                 resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
@@ -1819,6 +2332,14 @@ export async function runToolCalls(
                 typeof args.top_k === "number"
                     ? Math.max(1, Math.min(50, Math.floor(args.top_k)))
                     : 10;
+            const method =
+                args.method === "fast" ||
+                args.method === "local" ||
+                args.method === "global" ||
+                args.method === "entity" ||
+                args.method === "hybrid"
+                    ? (args.method as CaseVaultSearchMethod)
+                    : "hybrid";
             const labels = requested.length
                 ? requested.map((id) => resolveDocLabel(id, docStore, docIndex) ?? id)
                 : Object.keys(docIndex ?? {});
@@ -1841,9 +2362,10 @@ export async function runToolCalls(
                       documentIds,
                       projectId,
                       topK,
+                      method,
                       db,
                   })
-                : { hits: [], searched_object_count: 0 };
+                : { hits: [], searched_object_count: 0, method };
             const labelByDocumentId = new Map<string, string>();
             for (const [label, info] of Object.entries(docIndex ?? {})) {
                 labelByDocumentId.set(info.document_id, label);
@@ -1855,6 +2377,8 @@ export async function runToolCalls(
                 page_start: hit.page_start,
                 page_end: hit.page_end,
                 chunk_index: hit.chunk_index,
+                case_vault_id: hit.case_vault_id,
+                case_object_id: hit.case_object_id,
                 score: hit.score,
                 preview_text: hit.preview_text,
                 text: hit.text,
@@ -1871,8 +2395,11 @@ export async function runToolCalls(
                 tool_call_id: tc.id,
                 content: JSON.stringify({
                     query,
+                    method,
                     count: chunks.length,
                     searched_object_count: search.searched_object_count,
+                    response: search.response ?? null,
+                    sources: search.sources ?? [],
                     chunks,
                     note:
                         chunks.length === 0
@@ -1881,6 +2408,49 @@ export async function runToolCalls(
                             : undefined,
                 }),
             });
+
+        } else if (tc.function.name === "get_document_context") {
+            const rawDocId = String(args.doc_id ?? "");
+            const docId =
+                resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
+            const chunkIndex =
+                typeof args.chunk_index === "number"
+                    ? Math.max(0, Math.floor(args.chunk_index))
+                    : 0;
+            const documentId = docIndex?.[docId]?.document_id;
+            if (!documentId) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        ok: false,
+                        error: `Document '${rawDocId}' not found.`,
+                    }),
+                });
+            } else {
+                const context = await getCaseDocumentContext({
+                    documentId,
+                    versionId: docIndex?.[docId]?.version_id ?? null,
+                    chunkIndex,
+                    before:
+                        typeof args.before === "number"
+                            ? Math.floor(args.before)
+                            : undefined,
+                    after:
+                        typeof args.after === "number"
+                            ? Math.floor(args.after)
+                            : undefined,
+                    db,
+                });
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        doc_id: docId,
+                        ...context,
+                    }),
+                });
+            }
 
         } else if (tc.function.name === "find_in_document") {
             const rawDocId = args.doc_id as string;
@@ -2171,6 +2741,319 @@ export async function runToolCalls(
                         }),
                     });
                 }
+            }
+
+        } else if (tc.function.name === "legal_research") {
+            const query = optionalString(args.query);
+            const mode = args.mode === "research" ? "research" : "find";
+            const numResults = clampedInteger(args.num_results, 10, 1, 25);
+            if (!query) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        ok: false,
+                        error: "legal_research requires a query.",
+                    }),
+                });
+            } else {
+                const content = await runCaseLegalRequest(userId, db, (client) =>
+                    mode === "research"
+                        ? client.legalDeepResearch({
+                              query,
+                              additionalQueries: stringArray(
+                                  args.additional_queries,
+                                  8,
+                              ),
+                              jurisdiction: optionalString(args.jurisdiction),
+                              numResults,
+                          })
+                        : client.legalFind({
+                              query,
+                              jurisdiction: optionalString(args.jurisdiction),
+                              numResults,
+                          }),
+                );
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({ tool: "legal_research", mode, query, ...content }),
+                });
+            }
+
+        } else if (tc.function.name === "legal_source_text") {
+            const url = optionalString(args.url);
+            if (!url) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        ok: false,
+                        error: "legal_source_text requires a URL.",
+                    }),
+                });
+            } else {
+                const content = await runCaseLegalRequest(userId, db, (client) =>
+                    client.legalFullText({
+                        url,
+                        maxCharacters: clampedInteger(
+                            args.max_characters,
+                            undefined,
+                            500,
+                            50000,
+                        ),
+                        highlightQuery: optionalString(args.highlight_query),
+                        summaryQuery: optionalString(args.summary_query),
+                    }),
+                );
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({ tool: "legal_source_text", url, ...content }),
+                });
+            }
+
+        } else if (tc.function.name === "verify_legal_citations") {
+            const text = optionalString(args.text);
+            const url = optionalString(args.url);
+            const action = args.action === "extract" ? "extract" : "verify";
+            if (!text && !url) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        ok: false,
+                        error: "verify_legal_citations requires text or url.",
+                    }),
+                });
+            } else {
+                const content = await runCaseLegalRequest(userId, db, (client) => {
+                    if (url) return client.legalExtractCitationsFromUrl(url);
+                    return action === "extract"
+                        ? client.legalExtractCitations(text as string)
+                        : client.legalVerifyCitations(text as string);
+                });
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        tool: "verify_legal_citations",
+                        action,
+                        input: url ? { url } : { text },
+                        note: url
+                            ? "URL inputs use Case.dev citation extraction from URL."
+                            : undefined,
+                        ...content,
+                    }),
+                });
+            }
+
+        } else if (tc.function.name === "find_similar_legal_sources") {
+            const url = optionalString(args.url);
+            if (!url) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        ok: false,
+                        error: "find_similar_legal_sources requires a URL.",
+                    }),
+                });
+            } else {
+                const content = await runCaseLegalRequest(userId, db, (client) =>
+                    client.legalFindSimilar({
+                        url,
+                        jurisdiction: optionalString(args.jurisdiction),
+                        numResults: clampedInteger(args.num_results, 10, 1, 25),
+                        startPublishedDate: optionalString(
+                            args.start_published_date,
+                        ),
+                    }),
+                );
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        tool: "find_similar_legal_sources",
+                        url,
+                        ...content,
+                    }),
+                });
+            }
+
+        } else if (tc.function.name === "legal_dockets") {
+            const operation =
+                args.operation === "resolve_jurisdiction" ||
+                args.operation === "list_courts" ||
+                args.operation === "lookup"
+                    ? args.operation
+                    : "search";
+            const content = await runCaseLegalRequest(userId, db, (client) => {
+                if (operation === "resolve_jurisdiction") {
+                    const name = optionalString(args.name) ?? optionalString(args.query);
+                    if (!name) throw new Error("resolve_jurisdiction requires name.");
+                    return client.legalResolveJurisdiction(name);
+                }
+                if (operation === "list_courts") {
+                    return client.legalListCourts({
+                        query: optionalString(args.query),
+                        jurisdiction: optionalString(args.jurisdiction),
+                        inUseOnly: true,
+                        limit: clampedInteger(args.limit, 50, 1, 100),
+                        offset: clampedInteger(args.offset, 0, 0, 10000),
+                    });
+                }
+                if (operation === "lookup") {
+                    const docketId = optionalString(args.docket_id);
+                    if (!docketId) throw new Error("docket lookup requires docket_id.");
+                    return client.legalDocket({
+                        type: "lookup",
+                        docketId,
+                    });
+                }
+                const query = optionalString(args.query);
+                if (!query) throw new Error("docket search requires query.");
+                return client.legalDocket({
+                    type: "search",
+                    query,
+                    court: optionalString(args.court),
+                    dateFiledAfter: optionalString(args.date_filed_after),
+                    dateFiledBefore: optionalString(args.date_filed_before),
+                    limit: clampedInteger(args.limit, 25, 1, 100),
+                    offset: clampedInteger(args.offset, 0, 0, 10000),
+                });
+            });
+            toolResults.push({
+                role: "tool",
+                tool_call_id: tc.id,
+                content: JSON.stringify({
+                    tool: "legal_dockets",
+                    operation,
+                    live_pacer_fetch: false,
+                    docket_entries_requested: false,
+                    ...content,
+                }),
+            });
+
+        } else if (tc.function.name === "legal_sec_filings") {
+            const type = args.type === "entity" ? "entity" : "search";
+            const query = optionalString(args.query);
+            const ticker = optionalString(args.ticker);
+            const entity = optionalString(args.entity);
+            const cik = optionalString(args.cik);
+            if (type === "search" && !query) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        ok: false,
+                        error: "SEC filing search requires query.",
+                    }),
+                });
+            } else if (type === "entity" && !ticker && !entity && !cik) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        ok: false,
+                        error:
+                            "SEC entity lookup requires ticker, entity, or cik.",
+                    }),
+                });
+            } else {
+                const content = await runCaseLegalRequest(userId, db, (client) =>
+                    client.legalSecFiling({
+                        type,
+                        query,
+                        formTypes: stringArray(args.form_types, 20),
+                        ticker,
+                        entity,
+                        cik,
+                        dateAfter: optionalString(args.date_after),
+                        dateBefore: optionalString(args.date_before),
+                        limit: clampedInteger(args.limit, 25, 1, 100),
+                        offset: clampedInteger(args.offset, 0, 0, 10000),
+                    }),
+                );
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({ tool: "legal_sec_filings", type, ...content }),
+                });
+            }
+
+        } else if (tc.function.name === "legal_patent_search") {
+            const query = optionalString(args.query);
+            if (!query) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        ok: false,
+                        error: "legal_patent_search requires query.",
+                    }),
+                });
+            } else {
+                const sortOrder =
+                    args.sort_order === "asc" || args.sort_order === "desc"
+                        ? args.sort_order
+                        : undefined;
+                const content = await runCaseLegalRequest(userId, db, (client) =>
+                    client.legalPatentSearch({
+                        query,
+                        applicationStatus: optionalString(
+                            args.application_status,
+                        ),
+                        applicationType: optionalString(args.application_type),
+                        assignee: optionalString(args.assignee),
+                        inventor: optionalString(args.inventor),
+                        filingDateFrom: optionalString(args.filing_date_from),
+                        filingDateTo: optionalString(args.filing_date_to),
+                        grantDateFrom: optionalString(args.grant_date_from),
+                        grantDateTo: optionalString(args.grant_date_to),
+                        limit: clampedInteger(args.limit, 25, 1, 100),
+                        offset: clampedInteger(args.offset, 0, 0, 10000),
+                        sortBy: optionalString(args.sort_by),
+                        sortOrder,
+                    }),
+                );
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({ tool: "legal_patent_search", query, ...content }),
+                });
+            }
+
+        } else if (tc.function.name === "legal_trademark_lookup") {
+            const serialNumber = optionalString(args.serial_number);
+            const registrationNumber = optionalString(args.registration_number);
+            if (!serialNumber && !registrationNumber) {
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        ok: false,
+                        error:
+                            "legal_trademark_lookup requires serial_number or registration_number.",
+                    }),
+                });
+            } else {
+                const content = await runCaseLegalRequest(userId, db, (client) =>
+                    client.legalTrademarkLookup({
+                        serialNumber,
+                        registrationNumber,
+                    }),
+                );
+                toolResults.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify({
+                        tool: "legal_trademark_lookup",
+                        serial_number: serialNumber,
+                        registration_number: registrationNumber,
+                        ...content,
+                    }),
+                });
             }
 
         } else if (tc.function.name === "read_table_cells" && tabularStore) {
@@ -2917,8 +3800,8 @@ export async function runLLMStream(params: {
 }): Promise<{ fullText: string; events: AssistantEvent[] }> {
     const { apiMessages, docStore, docIndex, userId, db, write, extraTools, workflowStore, tabularStore, buildCitations, model, apiKeys, projectId } = params;
     const activeTools = extraTools?.length
-        ? [...TOOLS, ...WORKFLOW_TOOLS, ...SKILL_TOOLS, ...extraTools]
-        : [...TOOLS, ...WORKFLOW_TOOLS, ...SKILL_TOOLS];
+        ? [...TOOLS, ...WORKFLOW_TOOLS, ...SKILL_TOOLS, ...LEGAL_TOOLS, ...extraTools]
+        : [...TOOLS, ...WORKFLOW_TOOLS, ...SKILL_TOOLS, ...LEGAL_TOOLS];
 
     // Extract system prompt; pass remaining turns to the adapter as
     // plain user/assistant messages.
@@ -3176,6 +4059,11 @@ export async function runLLMStream(params: {
                   filename: docInfo?.filename ?? c.doc_id,
                   page: c.page,
                   quote: c.quote,
+                  case_vault_id: c.case_vault_id ?? null,
+                  case_object_id: c.case_object_id ?? null,
+                  chunk_index: c.chunk_index ?? null,
+                  word_start_index: c.word_start_index ?? null,
+                  word_end_index: c.word_end_index ?? null,
               };
           });
     write(`data: ${JSON.stringify({ type: "citations", citations })}\n\n`);
@@ -3205,6 +4093,11 @@ export function extractAnnotations(
             filename: docInfo?.filename ?? c.doc_id,
             page: c.page,
             quote: c.quote,
+            case_vault_id: c.case_vault_id ?? null,
+            case_object_id: c.case_object_id ?? null,
+            chunk_index: c.chunk_index ?? null,
+            word_start_index: c.word_start_index ?? null,
+            word_end_index: c.word_end_index ?? null,
         };
     });
     if (Array.isArray(events)) {

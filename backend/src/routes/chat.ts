@@ -13,6 +13,7 @@ import {
 import { completeText } from "../lib/llm";
 import { getUserApiKeys, getUserModelSettings } from "../lib/userSettings";
 import { checkProjectAccess } from "../lib/access";
+import { demoBudgetErrorPayload, isDemoBudgetError } from "../lib/demoUsage";
 
 export const chatRouter = Router();
 
@@ -309,6 +310,12 @@ chatRouter.post("/:chatId/generate-title", requireAuth, async (req, res) => {
         res.json({ title });
     } catch (err) {
         console.error("[generate-title]", err);
+        if (isDemoBudgetError(err)) {
+            return void res.status(402).json({
+                detail: err.message,
+                code: "demo_budget_exceeded",
+            });
+        }
         res.status(500).json({ detail: "Failed to generate title" });
     }
 });
@@ -474,9 +481,10 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     } catch (err) {
         console.error("[chat/stream] error:", err);
         try {
-            write(
-                `data: ${JSON.stringify({ type: "error", message: "Stream error" })}\n\n`,
-            );
+            const payload = isDemoBudgetError(err)
+                ? demoBudgetErrorPayload(err)
+                : { type: "error", message: "Stream error" };
+            write(`data: ${JSON.stringify(payload)}\n\n`);
             write("data: [DONE]\n\n");
         } catch {
             /* ignore */

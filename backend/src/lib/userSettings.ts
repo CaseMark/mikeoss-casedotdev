@@ -30,6 +30,17 @@ export async function getUserModelSettings(
     });
     const api_keys: UserApiKeys = {
         case: caseKey?.apiKey ?? null,
+        caseSource: caseKey?.source ?? null,
+        caseUsageContext:
+            caseKey?.source === "demo"
+                ? {
+                      userId,
+                      db: client,
+                      source: "demo",
+                      service: "llm",
+                      operation: "llm.request",
+                  }
+                : null,
         claude: data?.claude_api_key ?? null,
         gemini: data?.gemini_api_key ?? null,
     };
@@ -57,6 +68,17 @@ export async function getUserApiKeys(
     });
     return {
         case: caseKey?.apiKey ?? null,
+        caseSource: caseKey?.source ?? null,
+        caseUsageContext:
+            caseKey?.source === "demo"
+                ? {
+                      userId,
+                      db: client,
+                      source: "demo",
+                      service: "llm",
+                      operation: "llm.request",
+                  }
+                : null,
         claude: data?.claude_api_key ?? null,
         gemini: data?.gemini_api_key ?? null,
     };

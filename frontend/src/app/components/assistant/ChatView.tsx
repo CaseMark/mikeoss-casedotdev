@@ -17,6 +17,7 @@ import type {
 } from "../shared/types";
 import { useSidebar } from "@/app/contexts/SidebarContext";
 import { invalidateDocxBytes } from "@/app/hooks/useFetchDocxBytes";
+import { PoweredByCase } from "../shared/PoweredByCase";
 
 interface Props {
     messages: MikeMessage[];
@@ -585,6 +586,7 @@ export function ChatView({
                                     AI can make mistakes. Answers are not legal
                                     advice.
                                 </p>
+                                <PoweredByCase className="mt-2 text-gray-300 hover:text-gray-500" />
                             </div>
                         </div>
                     </div>

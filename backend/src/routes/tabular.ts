@@ -18,6 +18,7 @@ import {
     ensureReviewAccess,
     listAccessibleProjectIds,
 } from "../lib/access";
+import { demoBudgetErrorPayload, isDemoBudgetError } from "../lib/demoUsage";
 
 function formatPromptSuffix(format?: string, tags?: string[]): string {
     switch (format) {
@@ -890,8 +891,11 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
     } catch (err) {
         console.error("[tabular/generate] stream error", err);
         try {
+            const payload = isDemoBudgetError(err)
+                ? demoBudgetErrorPayload(err)
+                : { type: "error", message: String(err) };
             write(
-                `data: ${JSON.stringify({ type: "error", message: String(err) })}\n\ndata: [DONE]\n\n`,
+                `data: ${JSON.stringify(payload)}\n\ndata: [DONE]\n\n`,
             );
         } catch {
             /* ignore */
@@ -1280,9 +1284,10 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
     } catch (err) {
         console.error("[tabular/chat] error", err);
         try {
-            write(
-                `data: ${JSON.stringify({ type: "error", message: String(err) })}\n\n`,
-            );
+            const payload = isDemoBudgetError(err)
+                ? demoBudgetErrorPayload(err)
+                : { type: "error", message: String(err) };
+            write(`data: ${JSON.stringify(payload)}\n\n`);
             write("data: [DONE]\n\n");
         } catch {
             /* ignore */

@@ -374,7 +374,7 @@ export function WorkflowList() {
     );
 
     return (
-        <div className="flex flex-col flex-1 overflow-hidden bg-white">
+        <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white">
             {/* Page header */}
             <div className="flex items-center justify-between px-8 py-4 shrink-0">
                 <h1 className="text-2xl font-medium font-serif text-gray-900">
@@ -412,7 +412,7 @@ export function WorkflowList() {
                     importedWorkflows={custom}
                     onCreateWorkflow={handleCreateSkillWorkflow}
                     onOpenWorkflow={(workflow) => router.push(`/workflows/${workflow.id}`)}
-                    className="flex-1"
+                    className="min-h-0 flex-1"
                 />
             ) : (
             <div className="flex-1 overflow-auto">

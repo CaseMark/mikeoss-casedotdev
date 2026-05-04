@@ -1,6 +1,8 @@
 import crypto from "crypto";
 import type { createServerDb } from "./db";
 import { CaseClient } from "./caseClient";
+import { demoCaseApiKey, isDemoModeEnabled } from "./demoMode";
+import type { DemoUsageService } from "./demoUsage";
 
 const ALGORITHM = "aes-256-gcm";
 
@@ -8,6 +10,8 @@ export type CaseCredentialCapabilities = {
     llm: boolean;
     vault: boolean;
     skills: boolean;
+    matters: boolean;
+    legal: boolean;
     model_count: number | null;
 };
 
@@ -17,20 +21,24 @@ export type CaseCredentialStatus = {
     status: "verified" | "unverified" | "invalid" | "missing";
     verified_at: string | null;
     last_checked_at: string | null;
-    source: "user" | "server" | "missing";
+    source: "user" | "server" | "demo" | "missing";
     capabilities: CaseCredentialCapabilities;
     error: string | null;
 };
 
 export type EffectiveCaseApiKey = {
     apiKey: string;
-    source: "user" | "server";
+    source: "user" | "server" | "demo";
 };
+
+type Db = ReturnType<typeof createServerDb>;
 
 const EMPTY_CAPABILITIES: CaseCredentialCapabilities = {
     llm: false,
     vault: false,
     skills: false,
+    matters: false,
+    legal: false,
     model_count: null,
 };
 
@@ -59,6 +67,8 @@ function normalizeCapabilities(raw: unknown): CaseCredentialCapabilities {
         llm: value.llm === true,
         vault: value.vault === true,
         skills: value.skills === true,
+        matters: value.matters === true,
+        legal: value.legal === true,
         model_count:
             typeof value.model_count === "number"
                 ? value.model_count
@@ -122,8 +132,30 @@ export function decryptCaseApiKey(row: {
 
 export async function getCaseCredentialStatus(
     userId: string,
-    db: ReturnType<typeof createServerDb>,
+    db: Db,
 ): Promise<CaseCredentialStatus> {
+    const demoKey = isDemoModeEnabled() ? demoCaseApiKey() : null;
+    if (demoKey) {
+        const checkedAt = new Date().toISOString();
+        return {
+            configured: true,
+            last4: null,
+            status: "verified",
+            verified_at: checkedAt,
+            last_checked_at: checkedAt,
+            source: "demo",
+            capabilities: {
+                llm: true,
+                vault: true,
+                skills: true,
+                matters: true,
+                legal: true,
+                model_count: null,
+            },
+            error: null,
+        };
+    }
+
     const { data } = await db
         .from("case_api_credentials")
         .select("key_last4, status, verified_at, last_checked_at, capabilities, error")
@@ -192,7 +224,7 @@ export async function getCaseCredentialStatus(
 
 export async function getUserCaseApiKey(
     userId: string,
-    db: ReturnType<typeof createServerDb>,
+    db: Db,
 ): Promise<string | null> {
     const { data } = await db
         .from("case_api_credentials")
@@ -210,8 +242,10 @@ export async function getUserCaseApiKey(
 
 export async function getEffectiveCaseApiKey(
     userId: string,
-    db: ReturnType<typeof createServerDb>,
+    db: Db,
 ): Promise<EffectiveCaseApiKey | null> {
+    const demoKey = isDemoModeEnabled() ? demoCaseApiKey() : null;
+    if (demoKey) return { apiKey: demoKey, source: "demo" };
     const userKey = await getUserCaseApiKey(userId, db);
     if (userKey) return { apiKey: userKey, source: "user" };
     const fallback = serverFallbackKey();
@@ -242,10 +276,22 @@ export async function validateCaseApiKey(
             `Case.dev Skills validation failed: ${err instanceof Error ? err.message : String(err)}`,
         );
     });
+    await client.listMatters({ limit: 1 }).catch((err) => {
+        throw new Error(
+            `Case.dev Matters validation failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+    });
+    await client.legalListCourts({ limit: 1 }).catch((err) => {
+        throw new Error(
+            `Case.dev Legal validation failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+    });
     return {
         llm: true,
         vault: true,
         skills: true,
+        matters: true,
+        legal: true,
         model_count: models.length,
     };
 }
@@ -253,8 +299,11 @@ export async function validateCaseApiKey(
 export async function saveCaseApiKey(
     userId: string,
     apiKey: string,
-    db: ReturnType<typeof createServerDb>,
+    db: Db,
 ): Promise<CaseCredentialStatus> {
+    if (isDemoModeEnabled()) {
+        throw new Error("Demo mode uses the shared Case.dev demo key. Personal keys are disabled.");
+    }
     const trimmed = apiKey.trim();
     const capabilities = await validateCaseApiKey(trimmed);
     const encrypted = encryptCaseApiKey(trimmed);
@@ -289,8 +338,34 @@ export async function saveCaseApiKey(
 
 export async function clearCaseApiKey(
     userId: string,
-    db: ReturnType<typeof createServerDb>,
+    db: Db,
 ): Promise<CaseCredentialStatus> {
+    if (isDemoModeEnabled()) {
+        throw new Error("Demo mode uses the shared Case.dev demo key. Personal key changes are disabled.");
+    }
     await db.from("case_api_credentials").delete().eq("user_id", userId);
     return getCaseCredentialStatus(userId, db);
+}
+
+export function caseClientForEffectiveKey(
+    effective: EffectiveCaseApiKey,
+    params: {
+        userId: string;
+        db: Db;
+        service: DemoUsageService;
+        operation: string;
+    },
+): CaseClient {
+    return new CaseClient(effective.apiKey, {
+        usage:
+            effective.source === "demo"
+                ? {
+                      userId: params.userId,
+                      db: params.db,
+                      source: "demo",
+                      service: params.service,
+                      operation: params.operation,
+                  }
+                : undefined,
+    });
 }
