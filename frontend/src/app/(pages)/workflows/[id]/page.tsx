@@ -3,9 +3,10 @@
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
-import { ChevronDown, Plus, Users, X } from "lucide-react";
-import { getWorkflow, updateWorkflow } from "@/app/lib/mikeApi";
+import { ChevronDown, Eye, Plus, RefreshCw, Sparkles, Users, X } from "lucide-react";
+import { getWorkflow, refreshWorkflowCaseSkill, updateWorkflow } from "@/app/lib/mikeApi";
 import { ShareWorkflowModal } from "@/app/components/workflows/ShareWorkflowModal";
+import { CaseSkillPreviewModal } from "@/app/components/workflows/CaseSkillsCatalog";
 import { WFEditColumnModal } from "@/app/components/workflows/WFEditColumnModal";
 import { WFColumnViewModal } from "@/app/components/workflows/WFColumnViewModal";
 import { AddColumnModal } from "@/app/components/tabular/AddColumnModal";
@@ -58,6 +59,9 @@ export default function WorkflowDetailPage({ params }: Props) {
 
     // Save status
     const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+    const [refreshingSkill, setRefreshingSkill] = useState(false);
+    const [skillRefreshError, setSkillRefreshError] = useState("");
+    const [skillPreviewOpen, setSkillPreviewOpen] = useState(false);
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Column selection
@@ -141,6 +145,23 @@ export default function WorkflowDetailPage({ params }: Props) {
         if (!newTitle || newTitle === workflow?.title) return;
         const updated = await updateWorkflow(id, { title: newTitle });
         setWorkflow(updated);
+    }
+
+    async function handleRefreshSkill() {
+        if (!workflow?.case_skill_slug || readOnly) return;
+        setRefreshingSkill(true);
+        setSkillRefreshError("");
+        try {
+            const updated = await refreshWorkflowCaseSkill(id);
+            setWorkflow(updated);
+            setPromptMd(updated.prompt_md ?? "");
+            setSaveStatus("saved");
+            setTimeout(() => setSaveStatus("idle"), 2000);
+        } catch (err: unknown) {
+            setSkillRefreshError((err as Error).message || "Failed to refresh Case.dev skill");
+        } finally {
+            setRefreshingSkill(false);
+        }
     }
 
     function handlePromptChange(val: string | undefined) {
@@ -304,6 +325,77 @@ export default function WorkflowDetailPage({ params }: Props) {
                 <div className="flex items-center h-10 px-8 border-b border-gray-200">
                     <span className="text-xs text-gray-400">Read-only</span>
                 </div>
+            )}
+
+            {workflow.case_skill_slug && (
+                <div className="flex items-center justify-between gap-4 border-b border-emerald-100 bg-emerald-50 px-8 py-3">
+                    <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-800">
+                            <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                            <span className="truncate">
+                                {workflow.case_skill_name ?? workflow.case_skill_slug}
+                            </span>
+                            {workflow.case_skill_version && (
+                                <span className="shrink-0 text-emerald-700/70">
+                                    v{workflow.case_skill_version}
+                                </span>
+                            )}
+                        </div>
+                        {workflow.case_skill_summary && (
+                            <p className="mt-1 line-clamp-2 text-xs text-emerald-700/80">
+                                {workflow.case_skill_summary}
+                            </p>
+                        )}
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                            {(workflow.case_skill_tags ?? []).slice(0, 6).map((tag) => (
+                                <span
+                                    key={tag}
+                                    className="rounded-full bg-white/70 px-1.5 py-0.5 text-[10px] text-emerald-700"
+                                >
+                                    {tag}
+                                </span>
+                            ))}
+                            {workflow.case_skill_synced_at && (
+                                <span className="text-[10px] text-emerald-700/60">
+                                    Synced {new Date(workflow.case_skill_synced_at).toLocaleString()}
+                                </span>
+                            )}
+                            {skillRefreshError && (
+                                <span className="text-[10px] text-red-500">
+                                    {skillRefreshError}
+                                </span>
+                            )}
+                        </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => setSkillPreviewOpen(true)}
+                            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-emerald-200 bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+                        >
+                            <Eye className="h-3.5 w-3.5" />
+                            View skill
+                        </button>
+                        {!readOnly && (
+                            <button
+                                type="button"
+                                onClick={handleRefreshSkill}
+                                disabled={refreshingSkill}
+                                className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-emerald-200 bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+                            >
+                                <RefreshCw className={`h-3.5 w-3.5 ${refreshingSkill ? "animate-spin" : ""}`} />
+                                {refreshingSkill ? "Refreshing" : "Refresh skill"}
+                            </button>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {skillPreviewOpen && workflow.case_skill_slug && (
+                <CaseSkillPreviewModal
+                    workflow={workflow}
+                    onClose={() => setSkillPreviewOpen(false)}
+                />
             )}
 
             {/* Body */}

@@ -2,12 +2,14 @@
 
 import { useState } from "react";
 import {
+    AlertCircle,
     Check,
     ChevronDown,
     ChevronRight,
     File,
     FileText,
     Folder,
+    Loader2,
     Trash2,
 } from "lucide-react";
 import type { MikeDocument, MikeProject } from "./types";
@@ -79,28 +81,34 @@ export function FileDirectory({
         ...directoryProjects.flatMap((p) => p.documents ?? []),
     ];
 
+    const selectableStandaloneDocs = standaloneDocs.filter(isSelectableDoc);
     const allStandaloneSelected =
-        standaloneDocs.length > 0 &&
-        standaloneDocs.every((d) => selectedIds.has(d.id));
+        selectableStandaloneDocs.length > 0 &&
+        selectableStandaloneDocs.every((d) => selectedIds.has(d.id));
 
-    function toggle(docId: string) {
+    function isSelectableDoc(doc: MikeDocument) {
+        return doc.status === "ready" && !!doc.current_version_id;
+    }
+
+    function toggle(doc: MikeDocument) {
+        if (!isSelectableDoc(doc)) return;
         if (!allowMultiple) {
-            onChange(new Set([docId]));
+            onChange(new Set([doc.id]));
             return;
         }
         const next = new Set(selectedIds);
-        next.has(docId) ? next.delete(docId) : next.add(docId);
+        next.has(doc.id) ? next.delete(doc.id) : next.add(doc.id);
         onChange(next);
     }
 
     function toggleAll() {
         if (allStandaloneSelected) {
             const next = new Set(selectedIds);
-            standaloneDocs.forEach((d) => next.delete(d.id));
+            selectableStandaloneDocs.forEach((d) => next.delete(d.id));
             onChange(next);
         } else {
             const next = new Set(selectedIds);
-            standaloneDocs.forEach((d) => next.add(d.id));
+            selectableStandaloneDocs.forEach((d) => next.add(d.id));
             onChange(next);
         }
     }
@@ -187,13 +195,23 @@ export function FileDirectory({
                 )}
                 {standaloneDocs.map((doc) => {
                     const selected = selectedIds.has(doc.id);
+                    const selectable = isSelectableDoc(doc);
+                    const isProcessing =
+                        doc.status === "pending" || doc.status === "processing";
+                    const isError = doc.status === "error";
                     return (
                         <button
                             type="button"
                             key={doc.id}
-                            onClick={() => toggle(doc.id)}
-                            className={`w-full flex items-center gap-2 px-2 py-2 text-xs transition-colors text-left  ${
-                                selected ? "bg-gray-100" : "hover:bg-gray-50"
+                            onClick={() => toggle(doc)}
+                            disabled={!selectable}
+                            title={
+                                selectable
+                                    ? undefined
+                                    : "This document is not ready yet."
+                            }
+                            className={`w-full flex items-center gap-2 px-2 py-2 text-xs transition-colors text-left disabled:cursor-not-allowed disabled:opacity-50 ${
+                                selected ? "bg-gray-100" : selectable ? "hover:bg-gray-50" : ""
                             }`}
                         >
                             <span
@@ -207,7 +225,13 @@ export function FileDirectory({
                                     <Check className="h-2.5 w-2.5 text-white" />
                                 )}
                             </span>
-                            <DocFileIcon fileType={doc.file_type} />
+                            {isProcessing ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-400 shrink-0" />
+                            ) : isError ? (
+                                <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                            ) : (
+                                <DocFileIcon fileType={doc.file_type} />
+                            )}
                             <span
                                 className={`flex-1 truncate ${
                                     selected ? "text-gray-900" : "text-gray-700"
@@ -228,7 +252,7 @@ export function FileDirectory({
                 {standaloneDocs.length > 0 && directoryProjects.length > 0 && (
                     <div className="border-t border-gray-100 py-2 px-2">
                         <p className="text-xs font-medium text-gray-400">
-                            Projects
+                            Matters
                         </p>
                     </div>
                 )}
@@ -273,17 +297,32 @@ export function FileDirectory({
                                             const selected = selectedIds.has(
                                                 doc.id,
                                             );
+                                            const selectable =
+                                                isSelectableDoc(doc);
+                                            const isProcessing =
+                                                doc.status === "pending" ||
+                                                doc.status === "processing";
+                                            const isError =
+                                                doc.status === "error";
                                             return (
                                                 <button
                                                     type="button"
                                                     key={doc.id}
                                                     onClick={() =>
-                                                        toggle(doc.id)
+                                                        toggle(doc)
                                                     }
-                                                    className={`w-full flex items-center gap-2 pl-7 pr-2 py-2 text-xs transition-colors text-left  ${
+                                                    disabled={!selectable}
+                                                    title={
+                                                        selectable
+                                                            ? undefined
+                                                            : "This document is not ready yet."
+                                                    }
+                                                    className={`w-full flex items-center gap-2 pl-7 pr-2 py-2 text-xs transition-colors text-left disabled:cursor-not-allowed disabled:opacity-50 ${
                                                         selected
                                                             ? "bg-gray-100"
-                                                            : "hover:bg-gray-50"
+                                                            : selectable
+                                                              ? "hover:bg-gray-50"
+                                                              : ""
                                                     }`}
                                                 >
                                                     <span
@@ -297,9 +336,15 @@ export function FileDirectory({
                                                             <Check className="h-2.5 w-2.5 text-white" />
                                                         )}
                                                     </span>
-                                                    <DocFileIcon
-                                                        fileType={doc.file_type}
-                                                    />
+                                                    {isProcessing ? (
+                                                        <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-400 shrink-0" />
+                                                    ) : isError ? (
+                                                        <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                                                    ) : (
+                                                        <DocFileIcon
+                                                            fileType={doc.file_type}
+                                                        />
+                                                    )}
                                                     <span
                                                         className={`flex-1 truncate min-w-0 ${
                                                             selected

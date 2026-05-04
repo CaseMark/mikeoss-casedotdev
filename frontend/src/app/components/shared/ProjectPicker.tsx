@@ -52,12 +52,12 @@ export function ProjectPicker({ projects, loading, selectedId, onSelect }: Props
                     </div>
                 ) : filtered.length === 0 ? (
                     <p className="text-center text-sm text-gray-400 py-8">
-                        {q ? "No matches found" : "No projects yet"}
+                        {q ? "No matches found" : "No matters yet"}
                     </p>
                 ) : (
                     <div className="rounded-sm border border-gray-100 overflow-hidden">
                         <div className="flex items-center justify-between px-2 py-2">
-                            <p className="text-xs font-medium text-gray-400">Projects</p>
+                            <p className="text-xs font-medium text-gray-400">Matters</p>
                         </div>
                         <div className="space-y-px">
                             {filtered.map((project) => {

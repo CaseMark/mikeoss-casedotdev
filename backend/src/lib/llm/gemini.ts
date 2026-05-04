@@ -28,6 +28,9 @@ type GeminiContent = {
     parts: GeminiPart[];
 };
 
+const DEBUG_LLM_STREAMS =
+    process.env.MIKE_LLM_DEBUG_STREAMS?.trim().toLowerCase() === "true";
+
 function client(override?: string | null): GoogleGenAI {
     const apiKey = override?.trim() || process.env.GEMINI_API_KEY || "";
     return new GoogleGenAI({ apiKey });
@@ -77,7 +80,9 @@ export async function streamGemini(
         let sawThinking = false;
 
         for await (const chunk of stream) {
-            console.log("[gemini stream chunk]", JSON.stringify(chunk, null, 2));
+            if (DEBUG_LLM_STREAMS) {
+                console.log("[gemini stream chunk]", JSON.stringify(chunk, null, 2));
+            }
             const parts =
                 (chunk as { candidates?: { content?: { parts?: GeminiPart[] } }[] })
                     .candidates?.[0]?.content?.parts ?? [];

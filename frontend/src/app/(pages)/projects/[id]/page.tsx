@@ -1,13 +1,10 @@
-"use client";
-
-import { use } from "react";
-import { ProjectPage } from "@/app/components/projects/ProjectPage";
+import { redirect } from "next/navigation";
 
 interface Props {
     params: Promise<{ id: string }>;
 }
 
-export default function ProjectDetailPage({ params }: Props) {
-    const { id } = use(params);
-    return <ProjectPage projectId={id} />;
+export default async function ProjectDetailPage({ params }: Props) {
+    const { id } = await params;
+    redirect(`/matters/${id}`);
 }

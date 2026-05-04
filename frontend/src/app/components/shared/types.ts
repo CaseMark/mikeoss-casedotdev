@@ -16,6 +16,17 @@ export interface MikeProject {
   is_owner?: boolean;
   name: string;
   cm_number: string | null;
+  case_matter_id?: string | null;
+  case_primary_vault_id?: string | null;
+  matter_status?: string | null;
+  practice_area?: string | null;
+  matter_type?: string | null;
+  client_name?: string | null;
+  responsible_attorney?: string | null;
+  case_matter_metadata?: Record<string, unknown> | null;
+  matter_sync_status?: "pending" | "active" | "failed";
+  matter_sync_error?: string | null;
+  matter_synced_at?: string | null;
   shared_with: string[];
   created_at: string;
   updated_at: string;
@@ -39,6 +50,7 @@ export interface MikeDocument {
   page_count: number | null;
   structure_tree: StructureNode[] | null;
   status: "pending" | "processing" | "ready" | "error";
+  current_version_id?: string | null;
   created_at: string | null;
   updated_at?: string | null;
   /** Max version_number across assistant_edit rows, null if doc is unedited. */
@@ -176,6 +188,11 @@ export interface MikeCitationAnnotation {
   filename: string;
   page: number | string;
   quote: string;
+  case_vault_id?: string | null;
+  case_object_id?: string | null;
+  chunk_index?: number | null;
+  word_start_index?: number | null;
+  word_end_index?: number | null;
 }
 
 const PAGE_BREAK_SENTINEL = "[[PAGE_BREAK]]";
@@ -278,10 +295,19 @@ export interface MikeWorkflow {
   title: string;
   type: "assistant" | "tabular";
   prompt_md: string | null;
+  composed_prompt_md?: string | null;
   columns_config: ColumnConfig[] | null;
   is_system: boolean;
   created_at: string;
   practice?: string | null;
+  case_skill_slug?: string | null;
+  case_skill_name?: string | null;
+  case_skill_summary?: string | null;
+  case_skill_tags?: string[] | null;
+  case_skill_source?: string | null;
+  case_skill_version?: string | null;
+  case_skill_content_snapshot?: string | null;
+  case_skill_synced_at?: string | null;
   shared_by_name?: string | null;
   allow_edit?: boolean;
   is_owner?: boolean;

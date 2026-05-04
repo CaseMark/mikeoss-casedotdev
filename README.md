@@ -1,12 +1,18 @@
-# Mike
+# mikeoss-casedotdev
 
-Open-source release containing the Mike frontend and backend.
+Open-source Case.dev fork of Mike. This repository keeps the GitHub fork
+relationship with `willchen96/mike` while wiring Mike to Case.dev primitives for
+LLM routing, model selection, Skills, Vault-backed document storage, document
+grounding, and Case DB/Postgres-compatible persistence.
+
+This project is developer-oriented software for legal workflows. It is not a
+law firm, lawyer, or substitute for professional legal advice.
 
 ## Contents
 
 - `frontend/` - Next.js application
-- `backend/` - Express API, Supabase access, document processing, and migrations
-- `backend/migrations/000_one_shot_schema.sql` - one-shot Supabase schema for fresh databases
+- `backend/` - Express API, Better Auth, Case DB access, document processing, and migrations
+- `backend/migrations/000_one_shot_schema.sql` - one-shot Case DB/Postgres schema for fresh databases
 
 ## Setup
 
@@ -24,9 +30,32 @@ cp backend/.env.example backend/.env
 cp frontend/.env.local.example frontend/.env.local
 ```
 
-Run `backend/migrations/000_one_shot_schema.sql` in the Supabase SQL editor for a fresh database.
+The local dev helper will also create missing env files automatically on `start`.
+Generated files include safe defaults for ports and placeholders for Case.dev
+Database/Postgres values that must be replaced before testing auth, uploads,
+downloads, or vault sync.
 
-Start the backend:
+Run `backend/migrations/000_one_shot_schema.sql` against a fresh Case.dev Database
+or PostgreSQL-compatible database.
+
+Start both local services:
+
+```bash
+scripts/mike-dev.sh start
+```
+
+The helper supports `start`, `stop`, `restart`, `status`, and `logs`:
+
+```bash
+scripts/mike-dev.sh status
+scripts/mike-dev.sh restart backend
+scripts/mike-dev.sh logs frontend
+scripts/mike-dev.sh stop
+```
+
+It writes PID and log files under `.mike-dev/`, which is ignored by git. `status` prints configured ports, URLs, env files, PID files, log files, process state, readiness checks, and any placeholder env values that still need attention.
+
+You can also start services manually. Start the backend:
 
 ```bash
 npm run dev --prefix backend
@@ -42,19 +71,46 @@ Open `http://localhost:3000`.
 
 ## Required Services
 
-- Supabase Auth and Postgres
-- S3-compatible object storage, such as Cloudflare R2
-- At least one supported model provider key, depending on which models you enable
+- Case.dev Database or another PostgreSQL-compatible database
+- Better Auth tables from `backend/migrations/000_one_shot_schema.sql`
+- Case.dev API key for LLM routing, model catalog, Skills, and Vault storage/search
 - LibreOffice for DOC/DOCX to PDF conversion
+- Strong backend secrets for Better Auth, download-token signing, Case key
+  encryption, and Case.dev webhook verification
 
 ## Checks
 
 ```bash
 npm run build --prefix backend
 npm run build --prefix frontend
-npm run lint --prefix frontend
+(cd frontend && npx tsc --noEmit)
 ```
+
+Legacy R2 rows from pre-Case deployments can be copied into Case Vault with the
+legacy migration helper. It exists for old CaseMark data only; always run the
+dry run first and prefer fresh Case Vault storage for new deployments:
+
+```bash
+npm --prefix backend run migrate:r2-to-case -- --dry-run
+npm --prefix backend run migrate:r2-to-case
+```
+
+New deployments do not need R2. Case Vault is the canonical binary document
+store for uploads, generated DOCX files, PDF renditions, downloads, and AI
+grounding.
+
+## Security
+
+Do not commit real `.env`, `.env.local`, API keys, database URLs, session
+secrets, vault IDs, or downloaded client documents. Use GitHub private security
+advisories for vulnerability reports; see `SECURITY.md`.
+
+For production, set `CASE_WEBHOOK_SHARED_SECRET`, `DOWNLOAD_SIGNING_SECRET`,
+`BETTER_AUTH_SECRET`, and `CASE_KEY_ENCRYPTION_SECRET` to non-placeholder values.
+Unsigned Case.dev webhooks are only available when explicitly enabled for local
+development with `CASE_WEBHOOK_ALLOW_UNSIGNED=true`.
 
 ## License
 
-AGPL-3.0-only. See `LICENSE`.
+AGPL-3.0-only. See `LICENSE`. This fork preserves upstream attribution to
+`willchen96/mike`.

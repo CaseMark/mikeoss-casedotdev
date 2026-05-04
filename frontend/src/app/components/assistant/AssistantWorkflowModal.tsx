@@ -97,7 +97,7 @@ export function AssistantWorkflowModal({
                     <div className="flex items-center gap-1.5 text-xs text-gray-400">
                         {projectName ? (
                             <>
-                                <span>Projects</span>
+                                <span>Matters</span>
                                 <span>›</span>
                                 <span>
                                     {projectName}

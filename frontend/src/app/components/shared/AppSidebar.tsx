@@ -22,7 +22,7 @@ import { listProjects } from "@/app/lib/mikeApi";
 
 const NAV_ITEMS = [
     { href: "/assistant", label: "Assistant", icon: MessageSquare },
-    { href: "/projects", label: "Projects", icon: FolderOpen },
+    { href: "/matters", label: "Matters", icon: FolderOpen },
     { href: "/tabular-reviews", label: "Tabular Review", icon: Table2 },
     { href: "/workflows", label: "Workflows", icon: Library },
 ];
@@ -77,7 +77,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
         }
 
         const projectChatMatch = pathname.match(
-            /^\/projects\/[^/]+\/assistant\/chat\/([^/]+)/,
+            /^\/(?:projects|matters)\/[^/]+\/assistant\/chat\/([^/]+)/,
         );
         if (projectChatMatch) {
             setCurrentChatId(projectChatMatch[1]);
@@ -240,7 +240,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                             setCurrentChatId(chat.id);
                                             router.push(
                                                 chat.project_id
-                                                    ? `/projects/${chat.project_id}/assistant/chat/${chat.id}`
+                                                    ? `/matters/${chat.project_id}/assistant/chat/${chat.id}`
                                                     : `/assistant/chat/${chat.id}`,
                                             );
                                         }}

@@ -42,6 +42,7 @@ import { ProjectExplorer } from "@/app/components/projects/ProjectExplorer";
 import { DocView } from "@/app/components/shared/DocView";
 import { OwnerOnlyModal } from "@/app/components/shared/OwnerOnlyModal";
 import { DocxView } from "@/app/components/shared/DocxView";
+import { PoweredByCase } from "@/app/components/shared/PoweredByCase";
 import { MikeIcon } from "@/components/chat/mike-icon";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserProfile } from "@/contexts/UserProfileContext";
@@ -335,7 +336,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                 setChatOwnerId(chat.user_id ?? null);
                 if (loaded.length > 0) setMessages(loaded);
             })
-            .catch(() => router.replace(`/projects/${projectId}?tab=assistant`))
+            .catch(() => router.replace(`/matters/${projectId}?tab=assistant`))
             .finally(() => setChatLoaded(true));
     }, [chatId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -570,7 +571,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         setCreatingChat(true);
         try {
             const id = await saveChat(projectId);
-            if (id) router.push(`/projects/${projectId}/assistant/chat/${id}`);
+            if (id) router.push(`/matters/${projectId}/assistant/chat/${id}`);
         } finally {
             setCreatingChat(false);
         }
@@ -584,7 +585,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         setDeletingChat(true);
         try {
             await deleteChat(chatId);
-            router.push(`/projects/${projectId}?tab=assistant`);
+            router.push(`/matters/${projectId}?tab=assistant`);
         } finally {
             setDeletingChat(false);
         }
@@ -755,16 +756,16 @@ export default function ProjectAssistantChatPage({ params }: Props) {
             <div className="flex items-center justify-between px-8 py-4 shrink-0">
                 <div className="flex items-center gap-1.5 text-2xl font-medium font-serif">
                     <button
-                        onClick={() => router.push("/projects")}
+                        onClick={() => router.push("/matters")}
                         className="text-gray-500 hover:text-gray-700 transition-colors"
                     >
-                        Projects
+                        Matters
                     </button>
                     <span className="text-gray-300">›</span>
                     {project ? (
                         <button
                             onClick={() =>
-                                router.push(`/projects/${projectId}`)
+                                router.push(`/matters/${projectId}`)
                             }
                             className="text-gray-500 hover:text-gray-700 transition-colors"
                         >
@@ -781,7 +782,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     <span className="text-gray-300">›</span>
                     <button
                         onClick={() =>
-                            router.push(`/projects/${projectId}?tab=assistant`)
+                            router.push(`/matters/${projectId}?tab=assistant`)
                         }
                         className="text-gray-500 hover:text-gray-700 transition-colors"
                     >
@@ -826,7 +827,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
 
             {/* Three-panel body */}
             <div className="flex flex-1 min-h-0 border-t border-gray-200 overflow-hidden">
-                {/* LEFT: Project Explorer */}
+                {/* LEFT: Matter Explorer */}
                 {!explorerCollapsed && (
                     <>
                         <div
@@ -1104,7 +1105,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                     </p>
                                     <p className="font-serif text-base text-gray-500">
                                         Pro tip: Drag a document from the
-                                        Project Explorer to the Assistant to
+                                        Matter Explorer to the Assistant to
                                         direct it to read or edit.
                                     </p>
                                 </div>
@@ -1125,7 +1126,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     <div className="h-10 flex items-center gap-2 px-4 border-b border-gray-200 shrink-0">
                         <MikeIcon size={16} />
                         <span className="text-xs text-gray-700">
-                            Project Assistant
+                            Matter Assistant
                         </span>
                     </div>
 
@@ -1225,6 +1226,9 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                             projectName={project?.name}
                             projectCmNumber={project?.cm_number}
                         />
+                        <div className="pt-2 text-center">
+                            <PoweredByCase className="text-gray-300 hover:text-gray-500" />
+                        </div>
                     </div>
                 </div>
             </div>

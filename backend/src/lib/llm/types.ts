@@ -1,8 +1,9 @@
 // Shared types for the LLM provider adapter.
 // Callers always speak OpenAI-style tools + { role, content } messages; each
 // provider translates internally.
+import type { DemoUsageContext } from "../demoUsage";
 
-export type Provider = "claude" | "gemini";
+export type Provider = "case" | "claude" | "gemini";
 
 export type OpenAIToolSchema = {
     type: "function";
@@ -37,6 +38,9 @@ export type StreamCallbacks = {
 };
 
 export type UserApiKeys = {
+    case?: string | null;
+    caseSource?: "user" | "server" | "demo" | null;
+    caseUsageContext?: DemoUsageContext | null;
     claude?: string | null;
     gemini?: string | null;
 };

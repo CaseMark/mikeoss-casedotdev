@@ -88,10 +88,9 @@ export function TRView({ reviewId, projectId }: Props) {
     const router = useRouter();
     const { profile } = useUserProfile();
     const apiKeys = {
-        claudeApiKey: profile?.claudeApiKey ?? null,
-        geminiApiKey: profile?.geminiApiKey ?? null,
+        caseApiKeyConfigured: profile?.caseApiKey.configured ?? false,
     };
-    const tabularModel = profile?.tabularModel ?? "gemini-3-flash-preview";
+    const tabularModel = profile?.tabularModel ?? "casemark/core-large";
 
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
@@ -243,7 +242,7 @@ export function TRView({ reviewId, projectId }: Props) {
         // If columns changed since last save, update the review first
         if (columns.length === 0) return;
 
-        if (!isModelAvailable(tabularModel, apiKeys)) {
+        if (!isModelAvailable(tabularModel, apiKeys, profile?.caseModels)) {
             setApiKeyModalProvider(getModelProvider(tabularModel));
             return;
         }
@@ -475,15 +474,15 @@ export function TRView({ reviewId, projectId }: Props) {
                         {projectId && (
                             <>
                                 <button
-                                    onClick={() => router.push("/projects")}
+                                    onClick={() => router.push("/matters")}
                                     className="text-gray-500 hover:text-gray-700 transition-colors"
                                 >
-                                    Projects
+                                    Matters
                                 </button>
                                 <span className="text-gray-300">›</span>
                                 <button
                                     onClick={() =>
-                                        router.push(`/projects/${projectId}`)
+                                        router.push(`/matters/${projectId}`)
                                     }
                                     className="text-gray-500 hover:text-gray-700 transition-colors"
                                 >
@@ -504,7 +503,7 @@ export function TRView({ reviewId, projectId }: Props) {
                                 <button
                                     onClick={() =>
                                         router.push(
-                                            `/projects/${projectId}?tab=reviews`,
+                                            `/matters/${projectId}?tab=reviews`,
                                         )
                                     }
                                     className="text-gray-500 hover:text-gray-700 transition-colors"
@@ -777,7 +776,7 @@ export function TRView({ reviewId, projectId }: Props) {
                         handleAddDocuments(docs)
                     }
                     breadcrumb={[
-                        "Projects",
+                        "Matters",
                         project.name +
                             (project.cm_number
                                 ? ` (#${project.cm_number})`

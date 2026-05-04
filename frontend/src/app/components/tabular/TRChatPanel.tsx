@@ -37,6 +37,7 @@ import {
     isModelAvailable,
     type ModelProvider,
 } from "@/app/lib/modelAvailability";
+import type { ModelOption } from "@/app/lib/caseModels";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -447,13 +448,15 @@ function TRChatInput({
     model,
     onModelChange,
     apiKeys,
+    models,
 }: {
     isLoading: boolean;
     onSubmit: (value: string) => void;
     onCancel: () => void;
     model: string;
     onModelChange: (id: string) => void;
-    apiKeys: { claudeApiKey: string | null; geminiApiKey: string | null };
+    apiKeys: { caseApiKeyConfigured: boolean };
+    models?: ModelOption[];
 }) {
     const [value, setValue] = useState("");
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -496,6 +499,7 @@ function TRChatInput({
                         value={model}
                         onChange={onModelChange}
                         apiKeys={apiKeys}
+                        models={models}
                     />
                     <button
                         type="button"
@@ -608,10 +612,9 @@ export function TRChatPanel({
 }: Props) {
     const { profile, updateModelPreference } = useUserProfile();
     const apiKeys = {
-        claudeApiKey: profile?.claudeApiKey ?? null,
-        geminiApiKey: profile?.geminiApiKey ?? null,
+        caseApiKeyConfigured: profile?.caseApiKey.configured ?? false,
     };
-    const currentModel = profile?.tabularModel ?? "gemini-3-flash-preview";
+    const currentModel = profile?.tabularModel ?? "casemark/core-large";
     const [apiKeyModalProvider, setApiKeyModalProvider] =
         useState<ModelProvider | null>(null);
     const [chats, setChats] = useState<TRChat[]>([]);
@@ -957,7 +960,7 @@ export function TRChatPanel({
 
     async function handleSubmit(trimmed: string) {
         if (!trimmed || isLoading) return;
-        if (!isModelAvailable(currentModel, apiKeys)) {
+        if (!isModelAvailable(currentModel, apiKeys, profile?.caseModels)) {
             setApiKeyModalProvider(getModelProvider(currentModel));
             return;
         }
@@ -1458,6 +1461,7 @@ export function TRChatPanel({
                     updateModelPreference("tabularModel", id)
                 }
                 apiKeys={apiKeys}
+                models={profile?.caseModels}
             />
 
             <ApiKeyMissingModal

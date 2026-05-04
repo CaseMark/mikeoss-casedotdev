@@ -129,8 +129,8 @@ export function ProjectsOverview() {
     async function handleDeleteSelected() {
         const ids = [...selectedIds];
         setActionsOpen(false);
-        // Only the project owner can delete; the per-row delete is hidden
-        // for shared projects but the bulk action can still pick them up
+        // Only the matter owner can delete; the per-row delete is hidden
+        // for shared matters but the bulk action can still pick them up
         // if a user toggled them across tabs. Filter and warn.
         const owned = ids.filter((id) => {
             const p = projects.find((pp) => pp.id === id);
@@ -142,7 +142,7 @@ export function ProjectsOverview() {
         setProjects((prev) => prev.filter((p) => !owned.includes(p.id)));
         if (blocked > 0) {
             setOwnerOnlyAction(
-                `delete ${blocked} of the selected projects — only the project owner can delete a project`,
+                `delete ${blocked} of the selected matters — only the matter owner can delete a matter`,
             );
         }
     }
@@ -178,13 +178,13 @@ export function ProjectsOverview() {
             {/* Page header */}
             <div className="flex items-center justify-between px-8 py-4">
                 <h1 className="text-2xl font-medium font-serif text-gray-900">
-                    Projects
+                    Matters
                 </h1>
                 <div className="flex items-center gap-2">
                     <HeaderSearchBtn
                         value={search}
                         onChange={setSearch}
-                        placeholder="Search projects…"
+                        placeholder="Search matters…"
                     />
                     <button
                         onClick={() => setModalOpen(true)}
@@ -269,10 +269,10 @@ export function ProjectsOverview() {
                             <>
                                 <FolderOpen className="h-8 w-8 text-gray-300 mb-4" />
                                 <p className="text-2xl font-medium font-serif text-gray-900">
-                                    Projects
+                                    Matters
                                 </p>
                                 <p className="mt-1 text-xs text-gray-400 max-w-xs">
-                                    Upload documents into projects and to
+                                    Upload documents into matters and to
                                     commence chats and tabular reviews with
                                     them.
                                 </p>
@@ -285,7 +285,7 @@ export function ProjectsOverview() {
                             </>
                         ) : (
                             <p className="text-sm text-gray-400">
-                                No {activeTab} projects
+                                No {activeTab} matters
                             </p>
                         )}
                     </div>
@@ -300,7 +300,7 @@ export function ProjectsOverview() {
                                 key={project.id}
                                 onClick={() => {
                                     if (renamingId === project.id) return;
-                                    router.push(`/projects/${project.id}`);
+                                    router.push(`/matters/${project.id}`);
                                 }}
                                 className="group flex items-center h-10 pr-8 border-b border-gray-50 hover:bg-gray-50 cursor-pointer transition-colors"
                             >
@@ -318,7 +318,7 @@ export function ProjectsOverview() {
                                     />
                                 </div>
 
-                                {/* Project Name */}
+                                {/* Matter Name */}
                                 <div className={`sticky left-8 z-[60] ${NAME_COL_W} p-2 ${rowBg} group-hover:bg-gray-50`}>
                                     {renamingId === project.id ? (
                                         <input
@@ -434,7 +434,7 @@ export function ProjectsOverview() {
                 onClose={() => setModalOpen(false)}
                 onCreated={(p) => {
                     setProjects((prev) => [p, ...prev]);
-                    router.push(`/projects/${p.id}`);
+                    router.push(`/matters/${p.id}`);
                 }}
             />
 

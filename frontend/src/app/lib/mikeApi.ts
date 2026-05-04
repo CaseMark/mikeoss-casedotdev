@@ -1,9 +1,8 @@
 /**
  * Mike API client — all requests to the Node.js backend.
- * Attaches the Supabase auth token for user authentication.
+ * Uses Better Auth's HTTP-only cookie session for user authentication.
  */
 
-import { supabase } from "@/lib/supabase";
 import type {
     AssistantEvent,
     MikeChat,
@@ -17,6 +16,7 @@ import type {
     TabularReview,
     TabularReviewDetailOut,
 } from "@/app/components/shared/types";
+import type { ModelOption } from "@/app/lib/caseModels";
 
 // Server-side shape before mapping
 interface ServerMessage {
@@ -37,30 +37,28 @@ interface ServerChatDetailOut {
 const API_BASE =
     process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
 
-async function getAuthHeader(): Promise<Record<string, string>> {
-    const {
-        data: { session },
-    } = await supabase.auth.getSession();
-    if (!session?.access_token) return {};
-    return { Authorization: `Bearer ${session.access_token}` };
-}
-
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
-    const authHeaders = await getAuthHeader();
     const { headers: initHeaders, ...restInit } = init ?? {};
     const response = await fetch(`${API_BASE}${path}`, {
         cache: "no-store",
+        credentials: "include",
         ...restInit,
         headers: {
             Accept: "application/json",
-            ...authHeaders,
             ...(initHeaders as Record<string, string> | undefined),
         },
     });
 
     if (!response.ok) {
         const detail = await response.text();
-        throw new Error(detail || `API error: ${response.status}`);
+        let message = detail;
+        try {
+            const parsed = JSON.parse(detail) as { detail?: string; error?: string };
+            message = parsed.detail ?? parsed.error ?? message;
+        } catch {
+            /* keep raw response text */
+        }
+        throw new Error(message || `API error: ${response.status}`);
     }
 
     if (
@@ -74,22 +72,29 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Projects
+// Matters. The exported names retain "Project" for compatibility with
+// existing components while the backend aliases move to Case Matter routes.
 // ---------------------------------------------------------------------------
 
 export async function listProjects(): Promise<MikeProject[]> {
-    return apiRequest<MikeProject[]>("/projects");
+    return apiRequest<MikeProject[]>("/matters");
 }
 
 export async function createProject(
     name: string,
     cm_number?: string,
     shared_with?: string[],
+    matter?: {
+        practice_area?: string | null;
+        matter_type?: string | null;
+        client_name?: string | null;
+        responsible_attorney?: string | null;
+    },
 ): Promise<MikeProject> {
-    return apiRequest<MikeProject>("/projects", {
+    return apiRequest<MikeProject>("/matters", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, cm_number, shared_with }),
+        body: JSON.stringify({ name, cm_number, shared_with, ...matter }),
     });
 }
 
@@ -97,8 +102,136 @@ export async function deleteAccount(): Promise<void> {
     return apiRequest<void>("/user/account", { method: "DELETE" });
 }
 
+export interface UserProfileRow {
+    id: string;
+    user_id: string;
+    display_name: string | null;
+    organisation: string | null;
+    tier: string | null;
+    message_credits_used: number;
+    credits_reset_date: string;
+    tabular_model: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export async function getUserProfile(): Promise<UserProfileRow> {
+    return apiRequest<UserProfileRow>("/user/profile");
+}
+
+export async function updateUserProfile(
+    payload: Partial<
+        Pick<
+            UserProfileRow,
+            | "display_name"
+            | "organisation"
+            | "tabular_model"
+            | "message_credits_used"
+            | "credits_reset_date"
+        >
+    >,
+): Promise<UserProfileRow> {
+    return apiRequest<UserProfileRow>("/user/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    });
+}
+
+export interface CaseApiKeyStatus {
+    configured: boolean;
+    last4: string | null;
+    status: "verified" | "unverified" | "invalid" | "missing";
+    verified_at: string | null;
+    last_checked_at: string | null;
+    source: "user" | "server" | "demo" | "missing";
+    capabilities: {
+        llm: boolean;
+        vault: boolean;
+        skills: boolean;
+        matters: boolean;
+        legal: boolean;
+        model_count: number | null;
+    };
+    error: string | null;
+}
+
+export interface CaseModelCatalog {
+    source: "live" | "fallback";
+    key_source: "user" | "server" | "demo" | "missing";
+    models: ModelOption[];
+    error?: string;
+}
+
+export async function getCaseApiKeyStatus(): Promise<CaseApiKeyStatus> {
+    return apiRequest<CaseApiKeyStatus>("/user/case-api-key");
+}
+
+export async function saveCaseApiKey(
+    apiKey: string | null,
+): Promise<CaseApiKeyStatus> {
+    return apiRequest<CaseApiKeyStatus>("/user/case-api-key", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: apiKey }),
+    });
+}
+
+export async function getCaseModelCatalog(): Promise<CaseModelCatalog> {
+    return apiRequest<CaseModelCatalog>("/user/case-models");
+}
+
+export interface DemoUsageStatus {
+    enabled: boolean;
+    limit_usd: number;
+    spent_usd: number;
+    reserved_usd: number;
+    remaining_usd: number;
+    blocked: boolean;
+    global_remaining_usd?: number | null;
+}
+
+export async function getDemoUsage(): Promise<DemoUsageStatus> {
+    return apiRequest<DemoUsageStatus>("/user/demo-usage");
+}
+
+export interface CaseSkillSummary {
+    slug: string;
+    name: string;
+    summary: string | null;
+    tags: string[];
+    score: number | null;
+    source: "curated" | "custom" | null;
+    version?: string | null;
+    author_name?: string | null;
+    license?: string | null;
+}
+
+export interface CaseSkillDetail extends CaseSkillSummary {
+    content: string;
+    metadata?: Record<string, unknown> | null;
+    bundle?: Record<string, unknown> | null;
+}
+
+export interface CaseSkillFavorite extends CaseSkillSummary {
+    favorited_at: string;
+}
+
+export interface CaseSkillSearchResponse {
+    key_source: "user" | "server" | "demo" | "missing";
+    methods_used: string[];
+    results: CaseSkillSummary[];
+}
+
+export interface CaseSkillListResponse {
+    key_source: "user" | "server" | "demo" | "missing";
+    skills: CaseSkillSummary[];
+    next_cursor: string | null;
+    has_more: boolean;
+}
+
 export async function getProject(projectId: string): Promise<MikeProject> {
-    return apiRequest<MikeProject>(`/projects/${projectId}`);
+    return apiRequest<MikeProject>(`/matters/${projectId}`);
 }
 
 export async function updateProject(
@@ -107,9 +240,14 @@ export async function updateProject(
         name?: string;
         cm_number?: string;
         shared_with?: string[];
+        matter_status?: string | null;
+        practice_area?: string | null;
+        matter_type?: string | null;
+        client_name?: string | null;
+        responsible_attorney?: string | null;
     },
 ): Promise<MikeProject> {
-    return apiRequest<MikeProject>(`/projects/${projectId}`, {
+    return apiRequest<MikeProject>(`/matters/${projectId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -117,7 +255,7 @@ export async function updateProject(
 }
 
 export async function deleteProject(projectId: string): Promise<void> {
-    await apiRequest(`/projects/${projectId}`, { method: "DELETE" });
+    await apiRequest(`/matters/${projectId}`, { method: "DELETE" });
 }
 
 export interface ProjectPeople {
@@ -132,7 +270,93 @@ export interface ProjectPeople {
 export async function getProjectPeople(
     projectId: string,
 ): Promise<ProjectPeople> {
-    return apiRequest<ProjectPeople>(`/projects/${projectId}/people`);
+    return apiRequest<ProjectPeople>(`/matters/${projectId}/people`);
+}
+
+export interface MatterLogEntry {
+    id: string;
+    source?: "case" | "mike" | string;
+    event_type?: string;
+    summary?: string;
+    details?: Record<string, unknown> | null;
+    created_at?: string;
+    occurred_at?: string;
+}
+
+export interface MatterWorkItem {
+    id: string;
+    title?: string;
+    description?: string | null;
+    type?: string | null;
+    status?: string | null;
+    priority?: string | null;
+    instructions?: string | null;
+    due_at?: string | null;
+    created_at?: string;
+    updated_at?: string;
+}
+
+export async function listMatterLog(projectId: string): Promise<MatterLogEntry[]> {
+    return apiRequest<MatterLogEntry[]>(`/matters/${projectId}/matter-log`);
+}
+
+export async function listMatterWorkItems(
+    projectId: string,
+): Promise<MatterWorkItem[]> {
+    return apiRequest<MatterWorkItem[]>(`/matters/${projectId}/work-items`);
+}
+
+export async function createMatterWorkItem(
+    projectId: string,
+    payload: {
+        title: string;
+        description?: string | null;
+        type?: string;
+        priority?: string;
+        instructions?: string | null;
+        due_at?: string | null;
+    },
+): Promise<MatterWorkItem> {
+    return apiRequest<MatterWorkItem>(`/matters/${projectId}/work-items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    });
+}
+
+export async function updateMatterWorkItem(
+    projectId: string,
+    workItemId: string,
+    payload: Partial<MatterWorkItem>,
+): Promise<MatterWorkItem> {
+    return apiRequest<MatterWorkItem>(
+        `/matters/${projectId}/work-items/${workItemId}`,
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        },
+    );
+}
+
+export async function decideMatterWorkItem(
+    projectId: string,
+    workItemId: string,
+    payload: {
+        decision: "approve" | "revise" | "block" | "reassign";
+        reason?: string | null;
+        agent_type_id?: string | null;
+        metadata?: Record<string, unknown>;
+    },
+): Promise<MatterWorkItem> {
+    return apiRequest<MatterWorkItem>(
+        `/matters/${projectId}/work-items/${workItemId}/decision`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +372,7 @@ export async function createProjectFolder(
     name: string,
     parentFolderId?: string | null,
 ): Promise<MikeFolder> {
-    return apiRequest<MikeFolder>(`/projects/${projectId}/folders`, {
+    return apiRequest<MikeFolder>(`/matters/${projectId}/folders`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -164,7 +388,7 @@ export async function renameProjectFolder(
     name: string,
 ): Promise<MikeFolder> {
     return apiRequest<MikeFolder>(
-        `/projects/${projectId}/folders/${folderId}`,
+        `/matters/${projectId}/folders/${folderId}`,
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -177,7 +401,7 @@ export async function deleteProjectFolder(
     projectId: string,
     folderId: string,
 ): Promise<void> {
-    await apiRequest(`/projects/${projectId}/folders/${folderId}`, {
+    await apiRequest(`/matters/${projectId}/folders/${folderId}`, {
         method: "DELETE",
     });
 }
@@ -188,7 +412,7 @@ export async function moveSubfolderToFolder(
     parentFolderId: string | null,
 ): Promise<MikeFolder> {
     return apiRequest<MikeFolder>(
-        `/projects/${projectId}/folders/${folderId}`,
+        `/matters/${projectId}/folders/${folderId}`,
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -203,7 +427,7 @@ export async function moveDocumentToFolder(
     folderId: string | null,
 ): Promise<MikeDocument> {
     return apiRequest<MikeDocument>(
-        `/projects/${projectId}/documents/${documentId}/folder`,
+        `/matters/${projectId}/documents/${documentId}/folder`,
         {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -217,7 +441,7 @@ export async function addDocumentToProject(
     documentId: string,
 ): Promise<MikeDocument> {
     return apiRequest<MikeDocument>(
-        `/projects/${projectId}/documents/${documentId}`,
+        `/matters/${projectId}/documents/${documentId}`,
         { method: "POST" },
     );
 }
@@ -228,6 +452,25 @@ export interface MikeDocumentVersion {
     source: string;
     created_at: string;
     display_name: string | null;
+}
+
+interface DirectUploadInstruction {
+    method: "PUT";
+    upload_url: string;
+    headers: Record<string, string>;
+    complete_url: string;
+    expires_in: number;
+}
+
+interface DirectDocumentUploadSession {
+    document: MikeDocument;
+    version: MikeDocumentVersion;
+    direct_upload: DirectUploadInstruction;
+}
+
+interface DirectVersionUploadSession {
+    version: MikeDocumentVersion;
+    direct_upload: DirectUploadInstruction;
 }
 
 export async function listDocumentVersions(
@@ -244,20 +487,23 @@ export async function uploadDocumentVersion(
     file: File,
     displayName?: string,
 ): Promise<MikeDocumentVersion> {
-    const authHeaders = await getAuthHeader();
-    const form = new FormData();
-    form.append("file", file);
-    if (displayName) form.append("display_name", displayName);
-    const response = await fetch(
-        `${API_BASE}/single-documents/${documentId}/versions`,
+    const session = await apiRequest<DirectVersionUploadSession>(
+        `/single-documents/${documentId}/versions/direct-upload`,
         {
             method: "POST",
-            headers: { ...authHeaders },
-            body: form,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                filename: file.name,
+                size_bytes: file.size,
+                content_type: file.type,
+                display_name: displayName,
+            }),
         },
     );
-    if (!response.ok) throw new Error(await response.text());
-    return response.json() as Promise<MikeDocumentVersion>;
+    return completeDirectUpload<MikeDocumentVersion>(
+        file,
+        session.direct_upload,
+    );
 }
 
 export async function renameDocumentVersion(
@@ -279,34 +525,64 @@ export async function uploadProjectDocument(
     projectId: string,
     file: File,
 ): Promise<MikeDocument> {
-    const authHeaders = await getAuthHeader();
-    const form = new FormData();
-    form.append("file", file);
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/documents`,
-        {
-            method: "POST",
-            headers: { ...authHeaders },
-            body: form,
-        },
-    );
-    if (!response.ok) throw new Error(await response.text());
-    return response.json() as Promise<MikeDocument>;
+    return uploadDocumentDirect(file, projectId);
 }
 
 export async function uploadStandaloneDocument(
     file: File,
 ): Promise<MikeDocument> {
-    const authHeaders = await getAuthHeader();
-    const form = new FormData();
-    form.append("file", file);
-    const response = await fetch(`${API_BASE}/single-documents`, {
-        method: "POST",
-        headers: { ...authHeaders },
-        body: form,
+    return uploadDocumentDirect(file, null);
+}
+
+async function uploadDocumentDirect(
+    file: File,
+    projectId: string | null,
+): Promise<MikeDocument> {
+    const session = await apiRequest<DirectDocumentUploadSession>(
+        "/single-documents/direct-upload",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                filename: file.name,
+                size_bytes: file.size,
+                content_type: file.type,
+                project_id: projectId,
+            }),
+        },
+    );
+    return completeDirectUpload<MikeDocument>(file, session.direct_upload);
+}
+
+async function completeDirectUpload<T>(
+    file: File,
+    instruction: DirectUploadInstruction,
+): Promise<T> {
+    const upload = await fetch(instruction.upload_url, {
+        method: instruction.method,
+        headers: instruction.headers,
+        body: file,
     });
-    if (!response.ok) throw new Error(await response.text());
-    return response.json() as Promise<MikeDocument>;
+    if (!upload.ok) {
+        const detail = await upload.text().catch(() => "");
+        throw new Error(detail || `Upload failed: ${upload.status}`);
+    }
+    const etag = upload.headers.get("etag");
+    const complete = await fetch(`${API_BASE}${instruction.complete_url}`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "include",
+        headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ size_bytes: file.size, etag }),
+    });
+    if (!complete.ok) {
+        const detail = await complete.text();
+        throw new Error(detail || `Upload finalize failed: ${complete.status}`);
+    }
+    return complete.json() as Promise<T>;
 }
 
 export async function listStandaloneDocuments(): Promise<MikeDocument[]> {
@@ -327,16 +603,22 @@ export async function getDocumentUrl(
     return apiRequest(`/single-documents/${documentId}/url${qs}`);
 }
 
-export async function downloadDocumentsZip(
+export interface DocumentDownloadLink {
+    document_id: string;
+    filename: string;
+    url: string;
+    version_id: string | null;
+}
+
+export async function getDocumentDownloadLinks(
     documentIds: string[],
-): Promise<Blob> {
-    const authHeaders = await getAuthHeader();
+): Promise<DocumentDownloadLink[]> {
     const response = await fetch(`${API_BASE}/single-documents/download-zip`, {
         method: "POST",
         cache: "no-store",
+        credentials: "include",
         headers: {
             "Content-Type": "application/json",
-            ...authHeaders,
         },
         body: JSON.stringify({ document_ids: documentIds }),
     });
@@ -344,7 +626,8 @@ export async function downloadDocumentsZip(
         const detail = await response.text();
         throw new Error(detail || `API error: ${response.status}`);
     }
-    return response.blob();
+    const payload = (await response.json()) as { files?: DocumentDownloadLink[] };
+    return payload.files ?? [];
 }
 
 // ---------------------------------------------------------------------------
@@ -366,7 +649,7 @@ export async function listChats(): Promise<MikeChat[]> {
 }
 
 export async function listProjectChats(projectId: string): Promise<MikeChat[]> {
-    return apiRequest<MikeChat[]>(`/projects/${projectId}/chats`);
+    return apiRequest<MikeChat[]>(`/matters/${projectId}/chats`);
 }
 
 export async function getChat(chatId: string): Promise<MikeChatDetailOut> {
@@ -433,13 +716,12 @@ export async function streamChat(payload: {
     signal?: AbortSignal;
 }): Promise<Response> {
     const { signal, ...body } = payload;
-    const authHeaders = await getAuthHeader();
     return fetch(`${API_BASE}/chat`, {
         method: "POST",
+        credentials: "include",
         headers: {
             "Content-Type": "application/json",
             Accept: "text/event-stream",
-            ...authHeaders,
         },
         body: JSON.stringify(body),
         signal,
@@ -463,13 +745,12 @@ export async function streamProjectChat(payload: {
     signal?: AbortSignal;
 }): Promise<Response> {
     const { projectId, signal, ...body } = payload;
-    const authHeaders = await getAuthHeader();
-    return fetch(`${API_BASE}/projects/${projectId}/chat`, {
+    return fetch(`${API_BASE}/matters/${projectId}/chat`, {
         method: "POST",
+        credentials: "include",
         headers: {
             "Content-Type": "application/json",
             Accept: "text/event-stream",
-            ...authHeaders,
         },
         body: JSON.stringify(body),
         signal,
@@ -579,10 +860,9 @@ export async function deleteTabularReview(reviewId: string): Promise<void> {
 export async function streamTabularGeneration(
     reviewId: string,
 ): Promise<Response> {
-    const authHeaders = await getAuthHeader();
     return fetch(`${API_BASE}/tabular-review/${reviewId}/generate`, {
         method: "POST",
-        headers: { ...authHeaders },
+        credentials: "include",
     });
 }
 
@@ -593,10 +873,10 @@ export async function streamTabularChat(
     signal?: AbortSignal,
     context?: { reviewTitle?: string | null; projectName?: string | null },
 ): Promise<Response> {
-    const authHeaders = await getAuthHeader();
     return fetch(`${API_BASE}/tabular-review/${reviewId}/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
             messages,
             chat_id: chat_id ?? undefined,
@@ -744,6 +1024,96 @@ export async function createWorkflow(payload: {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
+    });
+}
+
+export async function searchCaseSkills(
+    query: string,
+    limit = 10,
+): Promise<CaseSkillSearchResponse> {
+    const params = new URLSearchParams({
+        q: query,
+        limit: String(limit),
+    });
+    return apiRequest<CaseSkillSearchResponse>(
+        `/workflows/skills/search?${params.toString()}`,
+    );
+}
+
+export async function browseCaseSkills(params: {
+    limit?: number;
+    cursor?: string | null;
+} = {}): Promise<CaseSkillListResponse> {
+    const query = new URLSearchParams();
+    query.set("limit", String(params.limit ?? 30));
+    if (params.cursor) query.set("cursor", params.cursor);
+    return apiRequest(`/workflows/skills/browse?${query.toString()}`);
+}
+
+export async function getCaseSkill(slug: string): Promise<{
+    key_source: "user" | "server" | "demo" | "missing";
+    skill: CaseSkillDetail;
+}> {
+    return apiRequest(`/workflows/skills/${encodeURIComponent(slug)}`);
+}
+
+export async function listCustomCaseSkills(params: {
+    limit?: number;
+    cursor?: string | null;
+    tag?: string | null;
+} = {}): Promise<{
+    key_source: "user" | "server" | "demo" | "missing";
+    skills: CaseSkillSummary[];
+    next_cursor: string | null;
+    has_more: boolean;
+}> {
+    const query = new URLSearchParams();
+    query.set("limit", String(params.limit ?? 50));
+    if (params.cursor) query.set("cursor", params.cursor);
+    if (params.tag) query.set("tag", params.tag);
+    return apiRequest(`/workflows/skills/custom?${query.toString()}`);
+}
+
+export async function listFavoriteCaseSkills(): Promise<{
+    favorites: CaseSkillFavorite[];
+}> {
+    return apiRequest("/workflows/skills/favorites");
+}
+
+export async function favoriteCaseSkill(
+    skill: CaseSkillSummary,
+): Promise<CaseSkillFavorite> {
+    return apiRequest("/workflows/skills/favorites", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skill }),
+    });
+}
+
+export async function unfavoriteCaseSkill(slug: string): Promise<void> {
+    await apiRequest(`/workflows/skills/favorites/${encodeURIComponent(slug)}`, {
+        method: "DELETE",
+    });
+}
+
+export async function createWorkflowFromCaseSkill(payload: {
+    slug: string;
+    title?: string;
+    practice?: string | null;
+    prompt_md?: string | null;
+}): Promise<MikeWorkflow> {
+    return apiRequest<MikeWorkflow>("/workflows/from-skill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    });
+}
+
+export async function refreshWorkflowCaseSkill(
+    workflowId: string,
+): Promise<MikeWorkflow> {
+    return apiRequest<MikeWorkflow>(`/workflows/${workflowId}/refresh-skill`, {
+        method: "POST",
     });
 }
 

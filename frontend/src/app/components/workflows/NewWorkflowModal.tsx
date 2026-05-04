@@ -1,10 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { X, MessageSquare, Table2 } from "lucide-react";
-import { createWorkflow, updateWorkflow } from "@/app/lib/mikeApi";
+import { BookOpen, MessageSquare, Sparkles, Table2, X } from "lucide-react";
+import {
+    createWorkflow,
+    createWorkflowFromCaseSkill,
+    updateWorkflow,
+    type CaseSkillSummary,
+} from "@/app/lib/mikeApi";
 import type { MikeWorkflow } from "../shared/types";
 import { PRACTICE_OPTIONS } from "./practices";
+import { CaseSkillsCatalog, type CaseSkillSelection } from "./CaseSkillsCatalog";
 
 interface Props {
     open: boolean;
@@ -17,10 +23,12 @@ interface Props {
 export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpdated }: Props) {
     const [title, setTitle] = useState("");
     const [type, setType] = useState<"assistant" | "tabular">("assistant");
+    const [sourceMode, setSourceMode] = useState<"blank" | "case-skill">("blank");
     const [practice, setPractice] = useState<string>("");
     const [customPractice, setCustomPractice] = useState("");
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+    const [selectedSkill, setSelectedSkill] = useState<CaseSkillSummary | null>(null);
     const customInputRef = useRef<HTMLInputElement>(null);
 
     const isEditing = !!editWorkflow;
@@ -42,7 +50,13 @@ export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpd
             }
             setError("");
         }
-    }, [open, editWorkflow?.id]);
+    }, [open, editWorkflow]);
+
+    useEffect(() => {
+        if (type === "tabular") {
+            setSourceMode("blank");
+        }
+    }, [type]);
 
     useEffect(() => {
         if (isOthers) {
@@ -64,6 +78,13 @@ export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpd
                     practice: effectivePractice,
                 });
                 onUpdated?.(updated);
+            } else if (sourceMode === "case-skill" && selectedSkill) {
+                const workflow = await createWorkflowFromCaseSkill({
+                    slug: selectedSkill.slug,
+                    title: title.trim(),
+                    practice: effectivePractice,
+                });
+                onCreated(workflow);
             } else {
                 const workflow = await createWorkflow({
                     title: title.trim(),
@@ -81,12 +102,29 @@ export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpd
         }
     }
 
+    function handleSkillSelection(selection: CaseSkillSelection | null) {
+        const skill = selection?.skill ?? null;
+        setSelectedSkill(skill);
+        if (!skill) return;
+        if (!title.trim()) setTitle(skill.name);
+        if (!practice && skill.tags[0]) {
+            if ((PRACTICE_OPTIONS as readonly string[]).includes(skill.tags[0])) {
+                setPractice(skill.tags[0]);
+            } else {
+                setPractice("Others");
+                setCustomPractice(skill.tags[0]);
+            }
+        }
+    }
+
     function resetForm() {
         setTitle("");
         setType("assistant");
+        setSourceMode("blank");
         setPractice("");
         setCustomPractice("");
         setError("");
+        setSelectedSkill(null);
     }
 
     function handleClose() {
@@ -158,6 +196,48 @@ export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpd
                             </div>
                         )}
 
+                        {!isEditing && type === "assistant" && (
+                            <div className="mt-5">
+                                <p className="mb-2 text-sm font-medium text-gray-500">Start from</p>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setSourceMode("blank")}
+                                        className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors ${
+                                            sourceMode === "blank"
+                                                ? "border-gray-900 bg-gray-900 text-white"
+                                                : "border-gray-200 text-gray-600 hover:bg-gray-50"
+                                        }`}
+                                    >
+                                        <BookOpen className="h-3 w-3" />
+                                        Blank workflow
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setSourceMode("case-skill")}
+                                        className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors ${
+                                            sourceMode === "case-skill"
+                                                ? "border-gray-900 bg-gray-900 text-white"
+                                                : "border-gray-200 text-gray-600 hover:bg-gray-50"
+                                        }`}
+                                    >
+                                        <Sparkles className="h-3 w-3" />
+                                        Case skill
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {!isEditing && type === "assistant" && sourceMode === "case-skill" && (
+                            <div className="mt-5 overflow-hidden rounded-md border border-gray-200 bg-white">
+                                <CaseSkillsCatalog
+                                    mode="picker"
+                                    selectedSlug={selectedSkill?.slug}
+                                    onSelectedSkillChange={handleSkillSelection}
+                                />
+                            </div>
+                        )}
+
                         {/* Practice */}
                         <div className="mt-5">
                             <p className="mb-2 text-sm font-medium text-gray-500">Practice Area</p>
@@ -205,7 +285,11 @@ export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpd
                         </button>
                         <button
                             type="submit"
-                            disabled={!title.trim() || loading}
+                            disabled={
+                                !title.trim() ||
+                                loading ||
+                                (sourceMode === "case-skill" && !selectedSkill)
+                            }
                             className="rounded-lg bg-gray-900 px-5 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-40 transition-colors"
                         >
                             {loading ? (isEditing ? "Saving…" : "Creating…") : (isEditing ? "Save changes" : "Create workflow")}

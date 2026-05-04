@@ -1,7 +1,5 @@
-"use client";
-
-import { ProjectsOverview } from "@/app/components/projects/ProjectsOverview";
+import { redirect } from "next/navigation";
 
 export default function ProjectsPage() {
-    return <ProjectsOverview />;
+    redirect("/matters");
 }

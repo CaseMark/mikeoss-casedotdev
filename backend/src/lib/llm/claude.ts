@@ -1,7 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Tool } from "@anthropic-ai/sdk/resources/messages/messages";
-import * as fs from "fs";
-import * as path from "path";
 import type {
     StreamChatParams,
     StreamChatResult,
@@ -9,11 +7,6 @@ import type {
     NormalizedToolResult,
 } from "./types";
 import { toClaudeTools } from "./tools";
-
-const RAW_STREAM_LOG_PATH = path.resolve(
-    process.cwd(),
-    "claude-raw-stream.log",
-);
 
 type ContentBlock =
     | { type: "text"; text: string }
@@ -26,6 +19,8 @@ type NativeMessage = {
 };
 
 const MAX_TOKENS = 16384;
+const DEBUG_LLM_STREAMS =
+    process.env.MIKE_LLM_DEBUG_STREAMS?.trim().toLowerCase() === "true";
 
 function client(override?: string | null): Anthropic {
     const apiKey = override?.trim() || process.env.ANTHROPIC_API_KEY || "";
@@ -80,11 +75,11 @@ export async function streamClaude(
 
         let sawThinking = false;
 
-        stream.on("streamEvent", (event) => {
-            const line = JSON.stringify(event);
-            console.log("[claude raw stream]", line);
-            fs.appendFile(RAW_STREAM_LOG_PATH, line + "\n", () => {});
-        });
+        if (DEBUG_LLM_STREAMS) {
+            stream.on("streamEvent", (event) => {
+                console.log("[claude stream event]", JSON.stringify(event));
+            });
+        }
 
         stream.on("text", (delta) => {
             callbacks.onContentDelta?.(delta);

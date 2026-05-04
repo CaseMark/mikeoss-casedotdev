@@ -1,10 +1,11 @@
-import { createServerSupabase } from "./supabase";
+import { createServerDb } from "./db";
 import {
     resolveModel,
     DEFAULT_TITLE_MODEL,
     DEFAULT_TABULAR_MODEL,
     type UserApiKeys,
 } from "./llm";
+import { getEffectiveCaseApiKey } from "./caseCredentials";
 
 export type UserModelSettings = {
     title_model: string;
@@ -12,34 +13,40 @@ export type UserModelSettings = {
     api_keys: UserApiKeys;
 };
 
-// Title generation is a lightweight task — always routed to the cheapest model
-// of whichever provider the user has keys for: Gemini Flash Lite if Gemini is
-// available, otherwise Claude Haiku. With no user keys set, defaults to Gemini
-// (the dev-mode env fallback).
-function resolveTitleModel(apiKeys: UserApiKeys): string {
-    if (apiKeys.gemini?.trim()) return DEFAULT_TITLE_MODEL;
-    if (apiKeys.claude?.trim()) return "claude-haiku-4-5";
-    return DEFAULT_TITLE_MODEL;
-}
-
 export async function getUserModelSettings(
     userId: string,
-    db?: ReturnType<typeof createServerSupabase>,
+    db?: ReturnType<typeof createServerDb>,
 ): Promise<UserModelSettings> {
-    const client = db ?? createServerSupabase();
+    const client = db ?? createServerDb();
     const { data } = await client
         .from("user_profiles")
-        .select("tabular_model, claude_api_key, gemini_api_key")
+        .select("tabular_model")
         .eq("user_id", userId)
         .single();
 
+    const caseKey = await getEffectiveCaseApiKey(userId, client).catch((err) => {
+        console.error("[userSettings] unable to load Case API key", err);
+        return null;
+    });
     const api_keys: UserApiKeys = {
-        claude: data?.claude_api_key ?? null,
-        gemini: data?.gemini_api_key ?? null,
+        case: caseKey?.apiKey ?? null,
+        caseSource: caseKey?.source ?? null,
+        caseUsageContext:
+            caseKey?.source === "demo"
+                ? {
+                      userId,
+                      db: client,
+                      source: "demo",
+                      service: "llm",
+                      operation: "llm.request",
+                  }
+                : null,
+        claude: null,
+        gemini: null,
     };
 
     return {
-        title_model: resolveTitleModel(api_keys),
+        title_model: DEFAULT_TITLE_MODEL,
         tabular_model: resolveModel(data?.tabular_model, DEFAULT_TABULAR_MODEL),
         api_keys,
     };
@@ -47,16 +54,27 @@ export async function getUserModelSettings(
 
 export async function getUserApiKeys(
     userId: string,
-    db?: ReturnType<typeof createServerSupabase>,
+    db?: ReturnType<typeof createServerDb>,
 ): Promise<UserApiKeys> {
-    const client = db ?? createServerSupabase();
-    const { data } = await client
-        .from("user_profiles")
-        .select("claude_api_key, gemini_api_key")
-        .eq("user_id", userId)
-        .single();
+    const client = db ?? createServerDb();
+    const caseKey = await getEffectiveCaseApiKey(userId, client).catch((err) => {
+        console.error("[userSettings] unable to load Case API key", err);
+        return null;
+    });
     return {
-        claude: data?.claude_api_key ?? null,
-        gemini: data?.gemini_api_key ?? null,
+        case: caseKey?.apiKey ?? null,
+        caseSource: caseKey?.source ?? null,
+        caseUsageContext:
+            caseKey?.source === "demo"
+                ? {
+                      userId,
+                      db: client,
+                      source: "demo",
+                      service: "llm",
+                      operation: "llm.request",
+                  }
+                : null,
+        claude: null,
+        gemini: null,
     };
 }

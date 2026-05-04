@@ -335,7 +335,7 @@ export function ProjectExplorer({
                 // External file drops bubble up to the parent panel's onDrop (upload handler)
             }}
         >
-            {/* Project root row */}
+            {/* Matter root row */}
             {projectName && (
                 <li
                     className="flex items-center gap-2 px-2 py-1.5 select-none"
@@ -353,7 +353,7 @@ export function ProjectExplorer({
 
             {/* Empty state */}
             {documents.length === 0 && folders.length === 0 && creatingIn === undefined && (
-                <li className="px-4 py-2 text-xs text-gray-400">No documents in this project.</li>
+                <li className="px-4 py-2 text-xs text-gray-400">No documents in this matter.</li>
             )}
 
             {/* Context menu */}

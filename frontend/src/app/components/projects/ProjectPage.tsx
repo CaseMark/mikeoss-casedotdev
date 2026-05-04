@@ -11,14 +11,19 @@ import {
     AlertCircle,
     ChevronDown,
     ChevronRight,
+    Check,
     Download,
     Folder,
     FolderOpen,
     FolderPlus,
+    History,
     MessageSquare,
     Pencil,
     Table2,
     Users,
+    ClipboardList,
+    RotateCcw,
+    ThumbsUp,
 } from "lucide-react";
 import { HeaderSearchBtn } from "@/app/components/shared/HeaderSearchBtn";
 import {
@@ -33,7 +38,7 @@ import {
     deleteTabularReview,
     updateTabularReview,
     getDocumentUrl,
-    downloadDocumentsZip,
+    getDocumentDownloadLinks,
     createProjectFolder,
     renameProjectFolder,
     deleteProjectFolder,
@@ -43,7 +48,14 @@ import {
     uploadDocumentVersion,
     renameDocumentVersion,
     getProjectPeople,
+    listMatterLog,
+    listMatterWorkItems,
+    createMatterWorkItem,
+    updateMatterWorkItem,
+    decideMatterWorkItem,
     type MikeDocumentVersion,
+    type MatterLogEntry,
+    type MatterWorkItem,
 } from "@/app/lib/mikeApi";
 import type {
     MikeDocument,
@@ -68,7 +80,7 @@ interface Props {
     projectId: string;
 }
 
-type Tab = "documents" | "assistant" | "reviews";
+type Tab = "documents" | "assistant" | "reviews" | "work-items" | "activity";
 
 type ContextMenu = {
     x: number;
@@ -276,11 +288,16 @@ export function ProjectPage({ projectId }: Props) {
     const [folders, setFolders] = useState<MikeFolder[]>([]);
     const [chats, setChats] = useState<MikeChat[]>([]);
     const [projectReviews, setProjectReviews] = useState<TabularReview[]>([]);
+    const [matterLog, setMatterLog] = useState<MatterLogEntry[]>([]);
+    const [matterWorkItems, setMatterWorkItems] = useState<MatterWorkItem[]>([]);
     const [loading, setLoading] = useState(true);
     const searchParams = useSearchParams();
     const tabParam = searchParams.get("tab");
     const tab: Tab =
-        tabParam === "assistant" || tabParam === "reviews"
+        tabParam === "assistant" ||
+        tabParam === "reviews" ||
+        tabParam === "work-items" ||
+        tabParam === "activity"
             ? tabParam
             : "documents";
     const [addDocsOpen, setAddDocsOpen] = useState(false);
@@ -296,6 +313,8 @@ export function ProjectPage({ projectId }: Props) {
     } | null>(null);
     const [creatingChat, setCreatingChat] = useState(false);
     const [creatingReview, setCreatingReview] = useState(false);
+    const [creatingWorkItem, setCreatingWorkItem] = useState(false);
+    const [newWorkItemTitle, setNewWorkItemTitle] = useState("");
     const [newTRModalOpen, setNewTRModalOpen] = useState(false);
 
     // Per-tab selection
@@ -464,7 +483,7 @@ export function ProjectPage({ projectId }: Props) {
     const { saveChat } = useChatHistoryContext();
 
     function handleTabChange(newTab: Tab) {
-        const base = `/projects/${projectId}`;
+        const base = `/matters/${projectId}`;
         const url = newTab === "documents" ? base : `${base}?tab=${newTab}`;
         router.push(url);
     }
@@ -474,14 +493,18 @@ export function ProjectPage({ projectId }: Props) {
             getProject(projectId),
             listProjectChats(projectId).catch(() => [] as MikeChat[]),
             listTabularReviews(projectId).catch(() => []),
+            listMatterLog(projectId).catch(() => [] as MatterLogEntry[]),
+            listMatterWorkItems(projectId).catch(() => [] as MatterWorkItem[]),
         ])
-            .then(([proj, projectChats, projectReviews]) => {
+            .then(([proj, projectChats, projectReviews, logEntries, workItems]) => {
                 setProject(proj);
                 const loadedFolders = proj.folders ?? [];
                 setFolders(loadedFolders);
                 setExpandedFolderIds(new Set(loadedFolders.map((f) => f.id)));
                 setChats(projectChats);
                 setProjectReviews(projectReviews);
+                setMatterLog(logEntries);
+                setMatterWorkItems(workItems);
             })
             .finally(() => setLoading(false));
     }, [projectId]);
@@ -645,7 +668,7 @@ export function ProjectPage({ projectId }: Props) {
         setCreatingChat(true);
         try {
             const id = await saveChat(projectId);
-            if (id) router.push(`/projects/${projectId}/assistant/chat/${id}`);
+            if (id) router.push(`/matters/${projectId}/assistant/chat/${id}`);
         } finally {
             setCreatingChat(false);
         }
@@ -672,10 +695,57 @@ export function ProjectPage({ projectId }: Props) {
                 columns_config: columnsConfig ?? [],
                 project_id: projectId,
             });
-            router.push(`/projects/${projectId}/tabular-reviews/${review.id}`);
+            router.push(`/matters/${projectId}/tabular-reviews/${review.id}`);
         } finally {
             setCreatingReview(false);
         }
+    }
+
+    async function handleCreateWorkItem() {
+        const title = newWorkItemTitle.trim();
+        if (!title) return;
+        setCreatingWorkItem(true);
+        try {
+            const item = await createMatterWorkItem(projectId, {
+                title,
+                type: "task",
+                priority: "normal",
+            });
+            setMatterWorkItems((prev) => [item, ...prev]);
+            setNewWorkItemTitle("");
+        } finally {
+            setCreatingWorkItem(false);
+        }
+    }
+
+    async function handleToggleWorkItemStatus(item: MatterWorkItem) {
+        const nextStatus = item.status === "completed" ? "open" : "completed";
+        const updated = await updateMatterWorkItem(projectId, item.id, {
+            status: nextStatus,
+        });
+        setMatterWorkItems((prev) =>
+            prev.map((existing) => (existing.id === item.id ? updated : existing)),
+        );
+    }
+
+    async function handleWorkItemDecision(
+        item: MatterWorkItem,
+        decision: "approve" | "revise",
+    ) {
+        const updated = await decideMatterWorkItem(projectId, item.id, {
+            decision,
+            reason: decision === "approve" ? "Approved in Mike." : "Needs revision in Mike.",
+        });
+        if (updated?.id) {
+            setMatterWorkItems((prev) =>
+                prev.map((existing) =>
+                    existing.id === item.id ? { ...existing, ...updated } : existing,
+                ),
+            );
+        }
+        listMatterLog(projectId)
+            .then(setMatterLog)
+            .catch(() => {});
     }
 
     async function handleTitleCommit(newName: string) {
@@ -683,7 +753,7 @@ export function ProjectPage({ projectId }: Props) {
         // Server-side this would 404 silently for non-owners; surface a
         // clear permission warning instead.
         if (project && project.is_owner === false) {
-            setOwnerOnlyAction("rename this project");
+            setOwnerOnlyAction("rename this matter");
             return;
         }
         setProject((prev) => (prev ? { ...prev, name: newName } : prev));
@@ -728,12 +798,13 @@ export function ProjectPage({ projectId }: Props) {
         setActionsOpen(false);
         const ids = [...selectedDocIds];
         if (ids.length === 1) { await downloadDoc(ids[0]); return; }
-        const blob = await downloadDocumentsZip(ids);
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = "documents.zip";
-        a.click();
-        URL.revokeObjectURL(a.href);
+        const links = await getDocumentDownloadLinks(ids);
+        for (const link of links) {
+            const a = document.createElement("a");
+            a.href = link.url;
+            a.download = link.filename;
+            a.click();
+        }
     }
 
     async function handleRemoveSelectedFromFolder() {
@@ -1111,7 +1182,7 @@ export function ProjectPage({ projectId }: Props) {
             <div className="flex-1 overflow-y-auto bg-white">
                 <div className="flex items-start justify-between px-8 py-4">
                     <div className="flex items-center gap-1.5 text-2xl font-medium font-serif">
-                        <span className="text-gray-400">Projects</span>
+                        <span className="text-gray-400">Matters</span>
                         <span className="text-gray-300">›</span>
                         <div className="h-6 w-40 rounded bg-gray-100 animate-pulse" />
                     </div>
@@ -1148,7 +1219,7 @@ export function ProjectPage({ projectId }: Props) {
     if (!project) {
         return (
             <div className="flex h-full items-center justify-center">
-                <p className="text-gray-400">Project not found</p>
+                <p className="text-gray-400">Matter not found</p>
             </div>
         );
     }
@@ -1158,6 +1229,20 @@ export function ProjectPage({ projectId }: Props) {
     const filteredDocs = q ? docs.filter((d) => d.filename.toLowerCase().includes(q)) : docs;
     const filteredChats = q ? chats.filter((c) => (c.title ?? "").toLowerCase().includes(q)) : chats;
     const filteredReviews = q ? projectReviews.filter((r) => (r.title ?? "").toLowerCase().includes(q)) : projectReviews;
+    const filteredWorkItems = q
+        ? matterWorkItems.filter((item) =>
+              `${item.title ?? ""} ${item.description ?? ""} ${item.status ?? ""}`
+                  .toLowerCase()
+                  .includes(q),
+          )
+        : matterWorkItems;
+    const filteredMatterLog = q
+        ? matterLog.filter((entry) =>
+              `${entry.summary ?? ""} ${entry.event_type ?? ""}`
+                  .toLowerCase()
+                  .includes(q),
+          )
+        : matterLog;
 
     const allDocsSelected = filteredDocs.length > 0 && filteredDocs.every((d) => selectedDocIds.includes(d.id));
     const someDocsSelected = !allDocsSelected && filteredDocs.some((d) => selectedDocIds.includes(d.id));
@@ -1169,12 +1254,14 @@ export function ProjectPage({ projectId }: Props) {
     const currentSelectionCount =
         tab === "documents" ? selectedDocIds.length :
         tab === "assistant" ? selectedChatIds.length :
-        selectedReviewIds.length;
+        tab === "reviews" ? selectedReviewIds.length :
+        0;
 
     const handleDeleteSelected =
         tab === "documents" ? handleDeleteSelectedDocs :
         tab === "assistant" ? handleDeleteSelectedChats :
-        handleDeleteSelectedReviews;
+        tab === "reviews" ? handleDeleteSelectedReviews :
+        () => {};
 
     const actionsDropdown = currentSelectionCount > 0 ? (
         <div ref={actionsRef} className="relative">
@@ -1235,6 +1322,31 @@ export function ProjectPage({ projectId }: Props) {
                     </button>
                 </>
             )}
+            {tab === "work-items" && (
+                <div className="flex items-center gap-2">
+                    <input
+                        value={newWorkItemTitle}
+                        onChange={(e) => setNewWorkItemTitle(e.target.value)}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter") void handleCreateWorkItem();
+                        }}
+                        placeholder="New work item"
+                        className="h-8 w-56 rounded border border-gray-200 bg-white px-2 text-xs text-gray-700 outline-none focus:border-gray-400"
+                    />
+                    <button
+                        onClick={handleCreateWorkItem}
+                        disabled={creatingWorkItem || !newWorkItemTitle.trim()}
+                        className="flex items-center gap-1 text-xs px-3 font-medium text-gray-500 hover:text-gray-700 transition-colors disabled:text-gray-300"
+                    >
+                        {creatingWorkItem ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                            <Plus className="h-3.5 w-3.5" />
+                        )}
+                        Add Work Item
+                    </button>
+                </div>
+            )}
         </div>
     );
 
@@ -1245,15 +1357,15 @@ export function ProjectPage({ projectId }: Props) {
                 <div>
                     <div className="flex items-center gap-1.5 text-2xl font-medium font-serif">
                         <button
-                            onClick={() => router.push("/projects")}
+                            onClick={() => router.push("/matters")}
                             className="text-gray-400 hover:text-gray-600 transition-colors"
                         >
-                            Projects
+                            Matters
                         </button>
                         <span className="text-gray-300">›</span>
                         {tab !== "documents" ? (
                             <button
-                                onClick={() => router.push(`/projects/${projectId}`)}
+                                onClick={() => router.push(`/matters/${projectId}`)}
                                 className="text-gray-500 hover:text-gray-700 transition-colors"
                             >
                                 {project.name}
@@ -1269,7 +1381,15 @@ export function ProjectPage({ projectId }: Props) {
                         {tab !== "documents" && (
                             <>
                                 <span className="text-gray-300">›</span>
-                                <span className="text-gray-900">{tab === "assistant" ? "Assistant" : "Tabular Reviews"}</span>
+                                <span className="text-gray-900">
+                                    {tab === "assistant"
+                                        ? "Assistant"
+                                        : tab === "reviews"
+                                          ? "Tabular Reviews"
+                                          : tab === "work-items"
+                                            ? "Work Items"
+                                            : "Activity"}
+                                </span>
                             </>
                         )}
                     </div>
@@ -1319,6 +1439,8 @@ export function ProjectPage({ projectId }: Props) {
                     { id: "documents", label: "Documents" },
                     { id: "assistant", label: "Assistant" },
                     { id: "reviews", label: "Tabular Reviews" },
+                    { id: "work-items", label: "Work Items" },
+                    { id: "activity", label: "Activity" },
                 ]}
                 active={tab}
                 onChange={handleTabChange}
@@ -1578,7 +1700,7 @@ export function ProjectPage({ projectId }: Props) {
                             <div className="flex flex-col items-start py-24 w-full max-w-xs mx-auto">
                                 <MessageSquare className="h-8 w-8 text-gray-300 mb-4" />
                                 <p className="text-2xl font-medium font-serif text-gray-900">Assistant</p>
-                                <p className="mt-1 text-xs text-gray-400 max-w-xs">Ask questions and get answers grounded in the documents in this project.</p>
+                                <p className="mt-1 text-xs text-gray-400 max-w-xs">Ask questions and get answers grounded in the documents in this matter.</p>
                                 <button onClick={() => handleNewChat()} className="mt-4 inline-flex items-center gap-1 rounded-full bg-gray-900 px-3 py-1 text-xs font-medium text-white hover:bg-gray-700 transition-colors shadow-md">
                                     + Create New
                                 </button>
@@ -1588,7 +1710,7 @@ export function ProjectPage({ projectId }: Props) {
                                 {filteredChats.map((chat) => (
                                     <div
                                         key={chat.id}
-                                        onClick={() => { if (renamingChatId === chat.id) return; router.push(`/projects/${projectId}/assistant/chat/${chat.id}`); }}
+                                        onClick={() => { if (renamingChatId === chat.id) return; router.push(`/matters/${projectId}/assistant/chat/${chat.id}`); }}
                                         className="group flex items-center h-10 pr-8 border-b border-gray-50 hover:bg-gray-50 cursor-pointer transition-colors"
                                     >
                                         <div className={`sticky left-0 z-[60] ${CHECK_W} p-2 flex items-center justify-center ${selectedChatIds.includes(chat.id) ? "bg-gray-50" : "bg-white"} group-hover:bg-gray-50`} onClick={(e) => e.stopPropagation()}>
@@ -1657,7 +1779,7 @@ export function ProjectPage({ projectId }: Props) {
                             <div className="flex flex-col items-start py-24 w-full max-w-xs mx-auto">
                                 <Table2 className="h-8 w-8 text-gray-300 mb-4" />
                                 <p className="text-2xl font-medium font-serif text-gray-900">Tabular Reviews</p>
-                                <p className="mt-1 text-xs text-gray-400 max-w-xs">Extract data from project documents into tables using AI.</p>
+                                <p className="mt-1 text-xs text-gray-400 max-w-xs">Extract data from matter documents into tables using AI.</p>
                                 <button onClick={handleNewReview} disabled={creatingReview || docs.length === 0} className="mt-4 inline-flex items-center gap-1 rounded-full bg-gray-900 px-3 py-1 text-xs font-medium text-white hover:bg-gray-700 transition-colors shadow-md disabled:opacity-40">
                                     + Create New
                                 </button>
@@ -1667,7 +1789,7 @@ export function ProjectPage({ projectId }: Props) {
                                 {filteredReviews.map((review) => (
                                     <div
                                         key={review.id}
-                                        onClick={() => { if (renamingReviewId === review.id) return; router.push(`/projects/${projectId}/tabular-reviews/${review.id}`); }}
+                                        onClick={() => { if (renamingReviewId === review.id) return; router.push(`/matters/${projectId}/tabular-reviews/${review.id}`); }}
                                         className="group flex items-center h-10 pr-8 border-b border-gray-50 hover:bg-gray-50 cursor-pointer transition-colors"
                                     >
                                         <div className={`sticky left-0 z-[60] ${CHECK_W} p-2 flex items-center justify-center ${selectedReviewIds.includes(review.id) ? "bg-gray-50" : "bg-white"} group-hover:bg-gray-50`} onClick={(e) => e.stopPropagation()}>
@@ -1709,6 +1831,128 @@ export function ProjectPage({ projectId }: Props) {
                         )}
                     </>
                 )}
+
+                {/* Tab: Work Items */}
+                {tab === "work-items" && (
+                    <>
+                        <div className="flex items-center h-8 pr-8 border-b border-gray-200 text-xs text-gray-500 font-medium select-none">
+                            <div className={`sticky left-0 z-[60] ${NAME_COL_W} bg-white pl-2 text-left`}>
+                                Work item
+                            </div>
+                            <div className="ml-auto w-24 shrink-0 text-left">Status</div>
+                            <div className="w-24 shrink-0 text-left">Priority</div>
+                            <div className="w-32 shrink-0 text-left">Updated</div>
+                            <div className="w-24 shrink-0 text-right">Actions</div>
+                        </div>
+                        {filteredWorkItems.length === 0 ? (
+                            <div className="flex flex-col items-start py-24 w-full max-w-xs mx-auto">
+                                <ClipboardList className="h-8 w-8 text-gray-300 mb-4" />
+                                <p className="text-2xl font-medium font-serif text-gray-900">Work Items</p>
+                                <p className="mt-1 text-xs text-gray-400 max-w-xs">
+                                    Track Matter-native tasks and decisions from Case.dev.
+                                </p>
+                            </div>
+                        ) : (
+                            <div>
+                                {filteredWorkItems.map((item) => (
+                                    <div
+                                        key={item.id}
+                                        className="group flex items-center h-10 pr-8 border-b border-gray-50 hover:bg-gray-50 transition-colors"
+                                    >
+                                        <div className={`sticky left-0 z-[60] ${NAME_COL_W} bg-white group-hover:bg-gray-50 p-2`}>
+                                            <span className="text-sm text-gray-800 truncate block">
+                                                {item.title ?? "Untitled work item"}
+                                            </span>
+                                        </div>
+                                        <div className="ml-auto w-24 shrink-0 text-sm text-gray-500 truncate">
+                                            {item.status ?? "open"}
+                                        </div>
+                                        <div className="w-24 shrink-0 text-sm text-gray-500 truncate">
+                                            {item.priority ?? "normal"}
+                                        </div>
+                                        <div className="w-32 shrink-0 text-sm text-gray-500 truncate">
+                                            {item.updated_at || item.created_at
+                                                ? formatDate(item.updated_at ?? item.created_at!)
+                                                : <span className="text-gray-300">—</span>}
+                                        </div>
+                                        <div className="w-24 shrink-0 flex justify-end gap-1">
+                                            <button
+                                                onClick={() => handleToggleWorkItemStatus(item)}
+                                                title={item.status === "completed" ? "Reopen" : "Mark completed"}
+                                                className="flex h-6 w-6 items-center justify-center rounded text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                                            >
+                                                {item.status === "completed" ? (
+                                                    <RotateCcw className="h-3.5 w-3.5" />
+                                                ) : (
+                                                    <Check className="h-3.5 w-3.5" />
+                                                )}
+                                            </button>
+                                            <button
+                                                onClick={() => handleWorkItemDecision(item, "approve")}
+                                                title="Approve decision"
+                                                className="flex h-6 w-6 items-center justify-center rounded text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                                            >
+                                                <ThumbsUp className="h-3.5 w-3.5" />
+                                            </button>
+                                            <button
+                                                onClick={() => handleWorkItemDecision(item, "revise")}
+                                                title="Request revision"
+                                                className="flex h-6 w-6 items-center justify-center rounded text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                                            >
+                                                <Pencil className="h-3.5 w-3.5" />
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </>
+                )}
+
+                {/* Tab: Activity */}
+                {tab === "activity" && (
+                    <>
+                        <div className="flex items-center h-8 pr-8 border-b border-gray-200 text-xs text-gray-500 font-medium select-none">
+                            <div className={`sticky left-0 z-[60] ${NAME_COL_W} bg-white pl-2 text-left`}>
+                                Event
+                            </div>
+                            <div className="ml-auto w-32 shrink-0 text-left">Source</div>
+                            <div className="w-32 shrink-0 text-left">When</div>
+                        </div>
+                        {filteredMatterLog.length === 0 ? (
+                            <div className="flex flex-col items-start py-24 w-full max-w-xs mx-auto">
+                                <History className="h-8 w-8 text-gray-300 mb-4" />
+                                <p className="text-2xl font-medium font-serif text-gray-900">Activity</p>
+                                <p className="mt-1 text-xs text-gray-400 max-w-xs">
+                                    Matter logs from Case.dev and recent Mike events will appear here.
+                                </p>
+                            </div>
+                        ) : (
+                            <div>
+                                {filteredMatterLog.map((entry, index) => (
+                                    <div
+                                        key={entry.id ?? `${entry.source ?? "event"}-${index}`}
+                                        className="group flex items-center h-10 pr-8 border-b border-gray-50 hover:bg-gray-50 transition-colors"
+                                    >
+                                        <div className={`sticky left-0 z-[60] ${NAME_COL_W} bg-white group-hover:bg-gray-50 p-2`}>
+                                            <span className="text-sm text-gray-800 truncate block">
+                                                {entry.summary ?? entry.event_type ?? "Matter event"}
+                                            </span>
+                                        </div>
+                                        <div className="ml-auto w-32 shrink-0 text-sm text-gray-500 truncate">
+                                            {entry.source ?? "case"}
+                                        </div>
+                                        <div className="w-32 shrink-0 text-sm text-gray-500 truncate">
+                                            {entry.created_at || entry.occurred_at
+                                                ? formatDate(entry.created_at ?? entry.occurred_at!)
+                                                : <span className="text-gray-300">—</span>}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </>
+                )}
             </div>
             </div>
 
@@ -1716,7 +1960,7 @@ export function ProjectPage({ projectId }: Props) {
                 open={addDocsOpen}
                 onClose={() => setAddDocsOpen(false)}
                 onSelect={handleDocsSelected}
-                breadcrumb={["Projects", project.name + (project.cm_number ? ` (${project.cm_number})` : ""), "Add Documents"]}
+                breadcrumb={["Matters", project.name + (project.cm_number ? ` (${project.cm_number})` : ""), "Add Documents"]}
                 projectId={projectId}
             />
 
@@ -1762,7 +2006,7 @@ export function ProjectPage({ projectId }: Props) {
                 fetchPeople={getProjectPeople}
                 currentUserEmail={user?.email ?? null}
                 breadcrumb={[
-                    "Projects",
+                    "Matters",
                     project
                         ? project.name +
                           (project.cm_number ? ` (${project.cm_number})` : "")

@@ -1,9 +1,63 @@
--- Mike one-shot Supabase schema
--- Based on supabase-migration.sql plus the later backend/migrations/*.sql files.
--- Use this for a fresh Supabase database. Existing deployments should continue
--- to apply the incremental migration files instead.
+-- Mike one-shot Case DB/Postgres schema.
+-- Use this for a fresh Case.dev Database or any PostgreSQL-compatible target.
 
 create extension if not exists "pgcrypto";
+
+-- ---------------------------------------------------------------------------
+-- Better Auth core tables
+-- ---------------------------------------------------------------------------
+
+create table if not exists public."user" (
+  id text primary key,
+  name text not null,
+  email text not null unique,
+  "emailVerified" boolean not null default false,
+  image text,
+  "createdAt" timestamptz not null default now(),
+  "updatedAt" timestamptz not null default now()
+);
+
+create table if not exists public.session (
+  id text primary key,
+  "userId" text not null references public."user"(id) on delete cascade,
+  token text not null unique,
+  "expiresAt" timestamptz not null,
+  "ipAddress" text,
+  "userAgent" text,
+  "createdAt" timestamptz not null default now(),
+  "updatedAt" timestamptz not null default now()
+);
+
+create index if not exists session_user_id_idx
+  on public.session("userId");
+
+create table if not exists public.account (
+  id text primary key,
+  "userId" text not null references public."user"(id) on delete cascade,
+  "accountId" text not null,
+  "providerId" text not null,
+  "accessToken" text,
+  "refreshToken" text,
+  "accessTokenExpiresAt" timestamptz,
+  "refreshTokenExpiresAt" timestamptz,
+  scope text,
+  "idToken" text,
+  password text,
+  "createdAt" timestamptz not null default now(),
+  "updatedAt" timestamptz not null default now()
+);
+
+create index if not exists account_user_id_idx
+  on public.account("userId");
+
+create table if not exists public.verification (
+  id text primary key,
+  identifier text not null,
+  value text not null,
+  "expiresAt" timestamptz not null,
+  "createdAt" timestamptz not null default now(),
+  "updatedAt" timestamptz not null default now()
+);
 
 -- ---------------------------------------------------------------------------
 -- User profiles
@@ -11,55 +65,19 @@ create extension if not exists "pgcrypto";
 
 create table if not exists public.user_profiles (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null unique references auth.users(id) on delete cascade,
+  user_id text not null unique references public."user"(id) on delete cascade,
   display_name text,
   organisation text,
   tier text not null default 'Free',
   message_credits_used integer not null default 0,
   credits_reset_date timestamptz not null default (now() + interval '30 days'),
-  tabular_model text not null default 'gemini-3-flash-preview',
-  claude_api_key text,
-  gemini_api_key text,
+  tabular_model text not null default 'casemark/core-large',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 create index if not exists idx_user_profiles_user
   on public.user_profiles(user_id);
-
-alter table public.user_profiles enable row level security;
-
-drop policy if exists "Users can view their own profile" on public.user_profiles;
-create policy "Users can view their own profile"
-  on public.user_profiles for select
-  using (auth.uid() = user_id);
-
-drop policy if exists "Users can update their own profile" on public.user_profiles;
-create policy "Users can update their own profile"
-  on public.user_profiles for update
-  using (auth.uid() = user_id);
-
-create or replace function public.handle_new_user()
-returns trigger
-language plpgsql
-security definer
-set search_path = public
-as $$
-begin
-  insert into public.user_profiles (user_id)
-  values (new.id)
-  on conflict (user_id) do nothing;
-  return new;
-exception when others then
-  -- Never block signup if the profile insert fails.
-  return new;
-end;
-$$;
-
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute procedure public.handle_new_user();
 
 -- ---------------------------------------------------------------------------
 -- Projects and documents
@@ -72,6 +90,22 @@ create table if not exists public.projects (
   cm_number text,
   visibility text not null default 'private',
   shared_with jsonb not null default '[]'::jsonb,
+  case_matter_id text,
+  case_primary_vault_id text,
+  matter_status text,
+  practice_area text,
+  matter_type text,
+  client_name text,
+  responsible_attorney text,
+  case_matter_metadata jsonb not null default '{}'::jsonb,
+  matter_sync_status text not null default 'pending'
+    check (matter_sync_status = any (array[
+      'pending'::text,
+      'active'::text,
+      'failed'::text
+    ])),
+  matter_sync_error text,
+  matter_synced_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -178,6 +212,162 @@ create index if not exists document_edits_version_id_idx
   on public.document_edits(version_id);
 
 -- ---------------------------------------------------------------------------
+-- Case.dev integration
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.case_api_credentials (
+  id uuid primary key default gen_random_uuid(),
+  user_id text not null unique references public."user"(id) on delete cascade,
+  encrypted_key text not null,
+  key_iv text not null,
+  key_tag text not null,
+  key_last4 text,
+  status text not null default 'unverified'
+    check (status = any (array[
+      'verified'::text,
+      'unverified'::text,
+      'invalid'::text
+    ])),
+  verified_at timestamptz,
+  capabilities jsonb not null default '{}'::jsonb,
+  last_checked_at timestamptz,
+  error text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists case_api_credentials_user_idx
+  on public.case_api_credentials(user_id);
+
+-- Users manage credentials only through the backend so encrypted blobs are
+-- never exposed to the browser.
+
+create table if not exists public.demo_user_usage (
+  user_id text primary key references public."user"(id) on delete cascade,
+  limit_usd_micros bigint not null default 5000000
+    check (limit_usd_micros >= 0),
+  spent_usd_micros bigint not null default 0
+    check (spent_usd_micros >= 0),
+  reserved_usd_micros bigint not null default 0
+    check (reserved_usd_micros >= 0),
+  blocked_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.demo_usage_events (
+  id uuid primary key default gen_random_uuid(),
+  request_id text not null,
+  user_id text not null references public."user"(id) on delete cascade,
+  case_source text not null default 'demo',
+  status text not null default 'reserved'
+    check (status = any (array[
+      'reserved'::text,
+      'charged'::text,
+      'released'::text
+    ])),
+  operation text not null,
+  service text not null,
+  model text,
+  estimated_usd_micros bigint not null default 0,
+  actual_usd_micros bigint,
+  charged_usd_micros bigint not null default 0,
+  prompt_tokens integer,
+  completion_tokens integer,
+  total_tokens integer,
+  units jsonb not null default '{}'::jsonb,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists demo_usage_events_user_created_idx
+  on public.demo_usage_events(user_id, created_at desc);
+
+create index if not exists demo_usage_events_request_idx
+  on public.demo_usage_events(request_id);
+
+create index if not exists demo_usage_events_service_idx
+  on public.demo_usage_events(service, operation, created_at desc);
+
+create table if not exists public.case_vault_links (
+  id uuid primary key default gen_random_uuid(),
+  owner_user_id text not null,
+  project_id uuid references public.projects(id) on delete cascade,
+  scope text not null
+    check (scope = any (array['personal'::text, 'project'::text])),
+  case_vault_id text not null,
+  name text not null,
+  status text not null default 'active'
+    check (status = any (array['active'::text, 'error'::text])),
+  error text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists case_vault_links_personal_unique
+  on public.case_vault_links(owner_user_id)
+  where scope = 'personal';
+
+create unique index if not exists case_vault_links_project_unique
+  on public.case_vault_links(project_id)
+  where scope = 'project' and project_id is not null;
+
+create index if not exists case_vault_links_owner_idx
+  on public.case_vault_links(owner_user_id);
+
+create table if not exists public.case_document_links (
+  id uuid primary key default gen_random_uuid(),
+  document_id uuid not null references public.documents(id) on delete cascade,
+  version_id uuid not null references public.document_versions(id) on delete cascade,
+  role text not null default 'source'
+    check (role = any (array[
+      'source'::text,
+      'pdf_rendition'::text,
+      'generated'::text
+    ])),
+  vault_link_id uuid references public.case_vault_links(id) on delete set null,
+  case_vault_id text,
+  case_object_id text,
+  content_hash text,
+  filename text,
+  content_type text,
+  size_bytes integer,
+  sync_status text not null default 'pending'
+    check (sync_status = any (array[
+      'pending'::text,
+      'uploading'::text,
+      'ingesting'::text,
+      'completed'::text,
+      'failed'::text,
+      'skipped'::text
+    ])),
+  ingestion_status text,
+  page_count integer,
+  text_length integer,
+  chunk_count integer,
+  vector_count integer,
+  graph_status text,
+  transcript_object_id text,
+  object_metadata jsonb not null default '{}'::jsonb,
+  last_seen_at timestamptz,
+  error text,
+  last_synced_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists case_document_links_version_unique
+  on public.case_document_links(document_id, version_id, role);
+
+create unique index if not exists case_document_links_case_object_unique
+  on public.case_document_links(case_vault_id, case_object_id)
+  where case_vault_id is not null and case_object_id is not null;
+
+create index if not exists case_document_links_document_idx
+  on public.case_document_links(document_id, sync_status);
+
+-- ---------------------------------------------------------------------------
 -- Workflows
 -- ---------------------------------------------------------------------------
 
@@ -189,12 +379,23 @@ create table if not exists public.workflows (
   prompt_md text,
   columns_config jsonb,
   practice text,
+  case_skill_slug text,
+  case_skill_name text,
+  case_skill_summary text,
+  case_skill_tags jsonb not null default '[]'::jsonb,
+  case_skill_source text,
+  case_skill_version text,
+  case_skill_content_snapshot text,
+  case_skill_synced_at timestamptz,
   is_system boolean not null default false,
   created_at timestamptz not null default now()
 );
 
 create index if not exists idx_workflows_user
   on public.workflows(user_id);
+
+create index if not exists workflows_case_skill_slug_idx
+  on public.workflows(case_skill_slug);
 
 create table if not exists public.hidden_workflows (
   id uuid primary key default gen_random_uuid(),
@@ -206,6 +407,25 @@ create table if not exists public.hidden_workflows (
 
 create index if not exists idx_hidden_workflows_user
   on public.hidden_workflows(user_id);
+
+create table if not exists public.case_skill_favorites (
+  id uuid primary key default gen_random_uuid(),
+  user_id text not null references public."user"(id) on delete cascade,
+  skill_slug text not null,
+  skill_name text not null,
+  skill_summary text,
+  skill_tags jsonb not null default '[]'::jsonb,
+  skill_source text,
+  skill_version text,
+  skill_author_name text,
+  skill_license text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(user_id, skill_slug)
+);
+
+create index if not exists case_skill_favorites_user_created_idx
+  on public.case_skill_favorites(user_id, created_at desc);
 
 create table if not exists public.workflow_shares (
   id uuid primary key default gen_random_uuid(),

@@ -34,7 +34,7 @@ export function SelectAssistantProjectModal({ open, onClose }: Props) {
             const chatId = await saveChat(selectedId);
             if (!chatId) return;
             onClose();
-            router.push(`/projects/${selectedId}/assistant/chat/${chatId}`);
+            router.push(`/matters/${selectedId}/assistant/chat/${chatId}`);
         } finally {
             setCreating(false);
         }
@@ -48,7 +48,7 @@ export function SelectAssistantProjectModal({ open, onClose }: Props) {
                     <div className="flex items-center gap-1.5 text-xs text-gray-400">
                         <span>Assistant</span>
                         <span>›</span>
-                        <span>Start Chat in a Project</span>
+                        <span>Start Chat in a Matter</span>
                     </div>
                     <button
                         onClick={onClose}

@@ -7,6 +7,7 @@ import {
     Folder,
     MessageSquare,
     Search,
+    Sparkles,
     Table2,
     X,
 } from "lucide-react";
@@ -77,7 +78,7 @@ function SimpleProjectPicker({
                 }}
                 onFocus={() => setOpen(true)}
                 onBlur={() => setTimeout(() => setOpen(false), 150)}
-                placeholder="Select a project…"
+                placeholder="Select a matter…"
                 className="w-full text-xs text-gray-700 placeholder:text-gray-400 bg-gray-50 border border-gray-200 rounded-md px-3 py-2 outline-none"
             />
             {selectedId && (
@@ -95,7 +96,7 @@ function SimpleProjectPicker({
                 <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-md shadow-sm overflow-y-auto max-h-40">
                     {filtered.length === 0 ? (
                         <p className="px-3 py-3 text-xs text-gray-400 text-center">
-                            No projects found
+                            No matters found
                         </p>
                     ) : (
                         filtered.map((p) => (
@@ -173,6 +174,16 @@ function MarkdownBody({ content }: { content: string }) {
 // Right panel for assistant workflows (select screen)
 // ---------------------------------------------------------------------------
 function AssistantPanel({ workflow }: { workflow: MikeWorkflow }) {
+    const hasCaseSkill = !!workflow.case_skill_slug;
+    const previewContent =
+        workflow.composed_prompt_md ??
+        workflow.case_skill_content_snapshot ??
+        workflow.prompt_md ??
+        "_No prompt defined._";
+    const skillTags = Array.isArray(workflow.case_skill_tags)
+        ? workflow.case_skill_tags
+        : [];
+
     return (
         <div className="flex-1 border-l border-t border-gray-200 flex flex-col overflow-hidden px-3 pb-3">
             <div className="py-3 shrink-0">
@@ -180,10 +191,35 @@ function AssistantPanel({ workflow }: { workflow: MikeWorkflow }) {
                     Workflow Prompt
                 </p>
             </div>
+            {hasCaseSkill && (
+                <div className="mb-3 rounded-md border border-emerald-100 bg-emerald-50 px-3 py-2">
+                    <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-800">
+                        <Sparkles className="h-3.5 w-3.5" />
+                        <span className="truncate">
+                            {workflow.case_skill_name ?? workflow.case_skill_slug}
+                        </span>
+                    </div>
+                    {workflow.case_skill_summary && (
+                        <p className="mt-1 line-clamp-2 text-xs text-emerald-700/80">
+                            {workflow.case_skill_summary}
+                        </p>
+                    )}
+                    {skillTags.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                            {skillTags.slice(0, 5).map((tag) => (
+                                <span
+                                    key={tag}
+                                    className="rounded-full bg-white/70 px-1.5 py-0.5 text-[10px] text-emerald-700"
+                                >
+                                    {tag}
+                                </span>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
             <div className="flex-1 overflow-y-auto px-4 py-3 text-sm border border-gray-200 rounded-md text-gray-600 leading-relaxed font-serif bg-gray-50">
-                <MarkdownBody
-                    content={workflow.prompt_md ?? "_No prompt defined._"}
-                />
+                <MarkdownBody content={previewContent} />
             </div>
         </div>
     );
@@ -372,7 +408,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
             handleClose();
             router.push(
                 projectId
-                    ? `/projects/${projectId}/assistant/chat/${chatId}`
+                    ? `/matters/${projectId}/assistant/chat/${chatId}`
                     : `/assistant/chat/${chatId}`,
             );
         } finally {
@@ -402,7 +438,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
             handleClose();
             router.push(
                 projectId
-                    ? `/projects/${projectId}/tabular-reviews/${review.id}`
+                    ? `/matters/${projectId}/tabular-reviews/${review.id}`
                     : `/tabular-reviews/${review.id}`,
             );
         } finally {
@@ -514,7 +550,15 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                                 {/* List */}
                                 <div className="overflow-y-auto flex-1">
                                     {workflows
-                                        .filter((wfItem) => !listSearch || wfItem.title.toLowerCase().includes(listSearch.toLowerCase()))
+                                        .filter((wfItem) => {
+                                            if (!listSearch) return true;
+                                            const q = listSearch.toLowerCase();
+                                            return (
+                                                wfItem.title.toLowerCase().includes(q) ||
+                                                (wfItem.case_skill_name ?? "").toLowerCase().includes(q) ||
+                                                (wfItem.case_skill_summary ?? "").toLowerCase().includes(q)
+                                            );
+                                        })
                                         .map((wfItem) => {
                                             const isSelected = selected?.id === wfItem.id;
                                             const Icon = wfItem.type === "tabular" ? Table2 : MessageSquare;
@@ -599,7 +643,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                             {/* Toggle row */}
                             <div className="px-5 py-3 flex flex-col gap-2 shrink-0">
                                 <span className="text-xs font-medium text-gray-700">
-                                    Create in a project
+                                    Create in a matter
                                 </span>
                                 <Toggle
                                     on={inProject}
@@ -616,7 +660,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                                 <>
                                     <div className="px-5 pt-1 pb-1 shrink-0">
                                         <p className="text-xs font-medium text-gray-700">
-                                            Select project
+                                            Select matter
                                         </p>
                                     </div>
                                     <div className="px-5 pb-2 shrink-0">
@@ -710,7 +754,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                             {/* Toggle stacked */}
                             <div className="px-5 pb-3 flex flex-col gap-2 shrink-0">
                                 <span className="text-xs font-medium text-gray-700">
-                                    Create in a project
+                                    Create in a matter
                                 </span>
                                 <Toggle
                                     on={inProject}
@@ -723,12 +767,12 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                                 />
                             </div>
 
-                            {/* Project section */}
+                            {/* Matter section */}
                             {inProject && (
                                 <>
                                     <div className="px-5 pt-1 pb-1 shrink-0">
                                         <p className="text-xs font-medium text-gray-700">
-                                            Select Project
+                                            Select Matter
                                         </p>
                                     </div>
                                     <div className="px-5 pb-2 shrink-0">
@@ -798,7 +842,7 @@ export function DisplayWorkflowModal({ workflows, workflow, onClose }: Props) {
                                         q
                                             ? "No matches found"
                                             : inProject
-                                              ? "No documents in this project"
+                                              ? "No documents in this matter"
                                               : "No documents yet"
                                     }
                                 />

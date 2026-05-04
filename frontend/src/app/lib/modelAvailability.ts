@@ -1,39 +1,37 @@
-import { MODELS, type ModelOption } from "../components/assistant/ModelToggle";
+import { modelOptionsOrFallback, type ModelOption } from "./caseModels";
 
-export type ModelProvider = "claude" | "gemini";
+export type ModelProvider = "case";
 
 export function getModelProvider(modelId: string): ModelProvider | null {
-    const model = MODELS.find((m) => m.id === modelId);
-    if (!model) return null;
-    return model.group === "Anthropic" ? "claude" : "gemini";
+    return modelId.trim() ? "case" : null;
 }
 
 export function isModelAvailable(
     modelId: string,
-    apiKeys: { claudeApiKey: string | null; geminiApiKey: string | null },
+    apiKeys: { caseApiKeyConfigured: boolean },
+    models?: ModelOption[],
 ): boolean {
-    const provider = getModelProvider(modelId);
-    if (!provider) return false;
-    return provider === "claude"
-        ? !!apiKeys.claudeApiKey?.trim()
-        : !!apiKeys.geminiApiKey?.trim();
+    const known =
+        modelOptionsOrFallback(models).some((model) => model.id === modelId) ||
+        modelId.includes("/");
+    return known && apiKeys.caseApiKeyConfigured;
 }
 
 export function isProviderAvailable(
     provider: ModelProvider,
-    apiKeys: { claudeApiKey: string | null; geminiApiKey: string | null },
+    apiKeys: { caseApiKeyConfigured: boolean },
 ): boolean {
-    return provider === "claude"
-        ? !!apiKeys.claudeApiKey?.trim()
-        : !!apiKeys.geminiApiKey?.trim();
+    return provider === "case" && apiKeys.caseApiKeyConfigured;
 }
 
 export function providerLabel(provider: ModelProvider): string {
-    return provider === "claude" ? "Anthropic (Claude)" : "Google (Gemini)";
+    void provider;
+    return "Case.dev";
 }
 
 export function modelGroupToProvider(
     group: ModelOption["group"],
 ): ModelProvider {
-    return group === "Anthropic" ? "claude" : "gemini";
+    void group;
+    return "case";
 }

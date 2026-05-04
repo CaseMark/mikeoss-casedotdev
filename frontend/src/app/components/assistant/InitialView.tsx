@@ -7,6 +7,7 @@ import { MikeIcon } from "@/components/chat/mike-icon";
 import { ChatInput } from "./ChatInput";
 import { SelectAssistantProjectModal } from "./SelectAssistantProjectModal";
 import type { MikeMessage } from "../shared/types";
+import { PoweredByCase } from "../shared/PoweredByCase";
 
 interface InitialViewProps {
     onSubmit: (message: MikeMessage) => void;
@@ -83,9 +84,10 @@ export function InitialView({ onSubmit }: InitialViewProps) {
                     />
 
                     <div className="text-center">
-                        <p className="text-xs py-3 mb-3 text-gray-500">
+                        <p className="text-xs pt-3 pb-2 text-gray-500">
                             AI can make mistakes. Answers are not legal advice.
                         </p>
+                        <PoweredByCase className="mb-3 text-gray-300 hover:text-gray-500" />
                     </div>
                 </div>
             </div>

@@ -21,6 +21,9 @@ interface Props {
 export function NewProjectModal({ open, onClose, onCreated }: Props) {
     const [name, setName] = useState("");
     const [cmNumber, setCmNumber] = useState("");
+    const [clientName, setClientName] = useState("");
+    const [practiceArea, setPracticeArea] = useState("");
+    const [matterType, setMatterType] = useState("");
     const [sharedEmails, setSharedEmails] = useState<string[]>([]);
     const [showMembers, setShowMembers] = useState(false);
     const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
@@ -50,6 +53,11 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                 name.trim(),
                 cmNumber.trim() || undefined,
                 sharedEmails,
+                {
+                    client_name: clientName.trim() || null,
+                    practice_area: practiceArea.trim() || null,
+                    matter_type: matterType.trim() || null,
+                },
             );
             await Promise.all([
                 ...[...selectedDocIds].map((id) => addDocumentToProject(project.id, id).catch(() => {})),
@@ -59,7 +67,12 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
             resetForm();
             onClose();
         } catch (err: unknown) {
-            setError((err as Error).message || "Failed to create project");
+            const message = (err as Error).message || "Failed to create matter";
+            setError(
+                message.includes("case_matter_id")
+                    ? "Your local database schema is missing the Case Matter columns. Run the latest backend migration, then try again."
+                    : message,
+            );
         } finally {
             setLoading(false);
         }
@@ -68,6 +81,9 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
     function resetForm() {
         setName("");
         setCmNumber("");
+        setClientName("");
+        setPracticeArea("");
+        setMatterType("");
         setSharedEmails([]);
         setShowMembers(false);
         setSelectedDocIds(new Set());
@@ -86,9 +102,9 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                 {/* Header */}
                 <div className="flex items-center justify-between px-6 pt-5 pb-2">
                     <div className="flex items-center gap-1.5 text-xs text-gray-400">
-                        <span>Projects</span>
+                        <span>Matters</span>
                         <span>›</span>
-                        <span>New project</span>
+                        <span>New matter</span>
                     </div>
                     <button
                         onClick={handleClose}
@@ -105,7 +121,7 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                             type="text"
                             value={name}
                             onChange={(e) => setName(e.target.value)}
-                            placeholder="Project name"
+                            placeholder="Matter name"
                             className="w-full text-2xl font-serif text-gray-800 placeholder-gray-300 focus:outline-none bg-transparent"
                             autoFocus
                         />
@@ -118,6 +134,30 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                             placeholder="Add a CM number..."
                             className="mt-1.5 w-full text-sm text-gray-500 placeholder-gray-300 focus:outline-none bg-transparent"
                         />
+
+                        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                            <input
+                                type="text"
+                                value={clientName}
+                                onChange={(e) => setClientName(e.target.value)}
+                                placeholder="Client"
+                                className="rounded border border-gray-200 px-3 py-2 text-sm text-gray-700 placeholder-gray-300 outline-none focus:border-gray-400"
+                            />
+                            <input
+                                type="text"
+                                value={practiceArea}
+                                onChange={(e) => setPracticeArea(e.target.value)}
+                                placeholder="Practice area"
+                                className="rounded border border-gray-200 px-3 py-2 text-sm text-gray-700 placeholder-gray-300 outline-none focus:border-gray-400"
+                            />
+                            <input
+                                type="text"
+                                value={matterType}
+                                onChange={(e) => setMatterType(e.target.value)}
+                                placeholder="Matter type"
+                                className="rounded border border-gray-200 px-3 py-2 text-sm text-gray-700 placeholder-gray-300 outline-none focus:border-gray-400"
+                            />
+                        </div>
 
                         {/* Attribute pills */}
                         <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -156,31 +196,38 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
 
                         </div>
 
-                        {error && (
-                            <p className="mt-3 text-sm text-red-500">{error}</p>
-                        )}
                     </div>
 
                     {/* Footer */}
-                    <div className="flex items-center justify-between border-t border-gray-100 px-6 py-4 shrink-0">
-                        <div className="flex items-center gap-2">
-                            <input
-                                ref={fileInputRef}
-                                type="file"
-                                multiple
-                                className="hidden"
-                                onChange={handleFileChange}
-                            />
-                            <button
-                                type="button"
-                                onClick={() => fileInputRef.current?.click()}
-                                className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50 transition-colors"
-                            >
-                                <Upload className="h-3.5 w-3.5" />
-                                Upload files{pendingFiles.length > 0 ? ` (${pendingFiles.length})` : ""}
-                            </button>
+                    <div className="flex items-end justify-between gap-4 border-t border-gray-100 px-6 py-4 shrink-0">
+                        <div className="min-w-0 flex-1">
+                            {error && (
+                                <p
+                                    role="alert"
+                                    className="mb-2 max-h-12 overflow-y-auto text-xs leading-snug text-red-500"
+                                >
+                                    {error}
+                                </p>
+                            )}
+                            <div className="flex items-center gap-2">
+                                <input
+                                    ref={fileInputRef}
+                                    type="file"
+                                    multiple
+                                    className="hidden"
+                                    onChange={handleFileChange}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => fileInputRef.current?.click()}
+                                    className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50 transition-colors"
+                                >
+                                    <Upload className="h-3.5 w-3.5" />
+                                    Upload files{pendingFiles.length > 0 ? ` (${pendingFiles.length})` : ""}
+                                </button>
+                            </div>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex shrink-0 items-center gap-2">
                             <button
                                 type="button"
                                 onClick={handleClose}
@@ -193,7 +240,7 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                                 disabled={!name.trim() || loading}
                                 className="rounded-lg bg-gray-900 px-5 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-40 transition-colors"
                             >
-                                {loading ? "Creating…" : "Create project"}
+                                {loading ? "Creating…" : "Create matter"}
                             </button>
                         </div>
                     </div>
