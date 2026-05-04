@@ -48,6 +48,7 @@ export default function ModelsAndApiKeysPage() {
     const keySource = profile?.caseApiKey.source ?? "missing";
     const usingServerKey = keySource === "server";
     const usingDemoKey = keySource === "demo";
+    const hostedDemo = profile?.demoUsage.enabled ?? false;
 
     return (
         <div className="space-y-8 max-w-4xl">
@@ -71,42 +72,45 @@ export default function ModelsAndApiKeysPage() {
                     <DemoBudgetSummary usage={profile?.demoUsage} />
                 )}
                 <div className="space-y-4 max-w-xl">
-                    {usingDemoKey ? (
+                    {usingDemoKey && (
                         <div className="rounded-md border border-gray-200 bg-gray-50 px-4 py-3">
                             <p className="text-sm font-medium text-gray-900">
                                 Demo key active
                             </p>
                             <p className="mt-1 text-xs text-gray-500">
-                                Personal keys are disabled in this hosted demo. Forked and local installs can still use their own Case.dev and model provider keys when Demo Mode is off.
+                                The hosted demo uses a shared Case.dev key with a lifetime budget. Add your own Case.dev key below to use your own account and bypass the demo budget.
                             </p>
                         </div>
-                    ) : (
-                        <ApiKeyField
-                            label="Case.dev API key"
-                            placeholder={
-                                profile?.caseApiKey.source === "user" &&
-                                profile.caseApiKey.last4
-                                    ? `Saved key ending in ${profile.caseApiKey.last4}`
-                                    : usingServerKey && profile?.caseApiKey.last4
-                                      ? `Using local server key ending in ${profile.caseApiKey.last4}`
-                                    : "sk_case_..."
-                            }
-                            status={
-                                profile?.caseApiKey.source === "user" &&
-                                profile.caseApiKey.configured
-                                    ? `Verified key ending in ${profile.caseApiKey.last4 ?? "****"}`
-                                    : usingServerKey
-                                      ? "Using local server key for development"
-                                    : undefined
-                            }
-                            error={profile?.caseApiKey.error ?? undefined}
-                            onSave={(value) =>
-                                updateCaseApiKey(value.trim() || null)
-                            }
-                            canClear={profile?.caseApiKey.source === "user"}
-                            onClear={() => updateCaseApiKey(null)}
-                        />
                     )}
+                    <ApiKeyField
+                        label="Case.dev API key"
+                        placeholder={
+                            profile?.caseApiKey.source === "user" &&
+                            profile.caseApiKey.last4
+                                ? `Saved key ending in ${profile.caseApiKey.last4}`
+                                : usingServerKey && profile?.caseApiKey.last4
+                                  ? `Using local server key ending in ${profile.caseApiKey.last4}`
+                                : usingDemoKey
+                                  ? "Optional: sk_case_..."
+                                  : "sk_case_..."
+                        }
+                        status={
+                            profile?.caseApiKey.source === "user" &&
+                            profile.caseApiKey.configured
+                                ? `Verified key ending in ${profile.caseApiKey.last4 ?? "****"}`
+                                : usingServerKey
+                                  ? "Using local server key for development"
+                                : usingDemoKey
+                                  ? "Using hosted demo key until you add your own key"
+                                  : undefined
+                        }
+                        error={profile?.caseApiKey.error ?? undefined}
+                        onSave={(value) =>
+                            updateCaseApiKey(value.trim() || null)
+                        }
+                        canClear={profile?.caseApiKey.source === "user"}
+                        onClear={() => updateCaseApiKey(null)}
+                    />
                 </div>
             </section>
 
@@ -128,7 +132,7 @@ export default function ModelsAndApiKeysPage() {
                             <ProviderKeyCard
                                 key={status!.provider}
                                 status={status!}
-                                demoMode={usingDemoKey}
+                                demoMode={hostedDemo}
                                 onSave={(provider, value) =>
                                     updateProviderApiKey(provider, value)
                                 }
