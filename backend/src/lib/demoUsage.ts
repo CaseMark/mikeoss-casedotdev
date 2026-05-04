@@ -46,7 +46,7 @@ export class DemoBudgetExceededError extends Error {
   }
 }
 
-type UsageFields = {
+export type UsageFields = {
   cost?: unknown;
   prompt_tokens?: unknown;
   completion_tokens?: unknown;
@@ -90,7 +90,7 @@ function statusFromRow(row: {
     spent_usd: microsToUsd(spent),
     reserved_usd: microsToUsd(reserved),
     remaining_usd: microsToUsd(remaining),
-    blocked: !!row.blocked_at || remaining <= 0,
+    blocked: remaining <= 0,
   };
 }
 
@@ -212,7 +212,6 @@ export async function reserveDemoUsage(params: {
            blocked_at = null,
            updated_at = now()
      where user_id = $1
-       and blocked_at is null
        and spent_usd_micros + reserved_usd_micros + $2 <= limit_usd_micros
      returning user_id`,
     [context.userId, estimateMicros],
@@ -270,8 +269,12 @@ export async function commitDemoUsage(
     params.actualMicros !== undefined && params.actualMicros !== null
       ? normalizeMicros(params.actualMicros)
       : actualFromUsage;
+  const fallbackMicros =
+    reservation.service === "llm"
+      ? demoEstimateConfig().llmUnknownMicros
+      : reservation.estimatedMicros;
   const chargedMicros = normalizeMicros(
-    actualMicros ?? reservation.estimatedMicros,
+    actualMicros ?? fallbackMicros,
   );
   const promptTokens =
     numberFromUnknown(params.usage?.prompt_tokens) ??
@@ -360,11 +363,56 @@ export function costMicrosFromUsage(usage?: UsageFields | null): number | null {
   return cost !== null ? normalizeMicros(cost * 1_000_000) : null;
 }
 
+export function estimateLlmUsageCostMicros(
+  usage: UsageFields | null | undefined,
+  pricing: Record<string, unknown> | null | undefined,
+): number | null {
+  const promptTokens =
+    numberFromUnknown(usage?.prompt_tokens) ??
+    numberFromUnknown(usage?.promptTokens);
+  const completionTokens =
+    numberFromUnknown(usage?.completion_tokens) ??
+    numberFromUnknown(usage?.completionTokens);
+  const inputPrice = pricingValue(pricing, [
+    "input",
+    "prompt",
+    "prompt_tokens",
+    "input_tokens",
+    "input_token",
+  ]);
+  const outputPrice = pricingValue(pricing, [
+    "output",
+    "completion",
+    "completion_tokens",
+    "output_tokens",
+    "output_token",
+  ]);
+
+  if (promptTokens === null && completionTokens === null) return null;
+  if (inputPrice === null && outputPrice === null) return null;
+
+  const inputCost = (promptTokens ?? 0) * (inputPrice ?? 0);
+  const outputCost = (completionTokens ?? 0) * (outputPrice ?? 0);
+  return normalizeMicros((inputCost + outputCost) * 1_000_000);
+}
+
 export function numberFromUnknown(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
+    const parsed = Number(value.trim().replace(/^\$/, ""));
     if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function pricingValue(
+  pricing: Record<string, unknown> | null | undefined,
+  keys: string[],
+): number | null {
+  if (!pricing) return null;
+  for (const key of keys) {
+    const value = numberFromUnknown(pricing[key]);
+    if (value !== null) return value;
   }
   return null;
 }

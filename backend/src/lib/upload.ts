@@ -6,6 +6,20 @@ export const MAX_UPLOAD_SIZE_MB = Math.round(
   MAX_UPLOAD_SIZE_BYTES / (1024 * 1024),
 );
 
+export class UploadTooLargeError extends Error {
+  status = 413;
+
+  constructor() {
+    super(`File too large. Maximum size is ${MAX_UPLOAD_SIZE_MB} MB.`);
+  }
+}
+
+export function assertUploadSize(sizeBytes: number): void {
+  if (sizeBytes > MAX_UPLOAD_SIZE_BYTES) {
+    throw new UploadTooLargeError();
+  }
+}
+
 const memoryUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -21,9 +35,9 @@ export function singleFileUpload(fieldName: string): RequestHandler {
 
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          return void res.status(413).json({
-            detail: `File too large. Maximum size is ${MAX_UPLOAD_SIZE_MB} MB.`,
-          });
+          return void res
+            .status(413)
+            .json({ detail: new UploadTooLargeError().message });
         }
         return void res.status(400).json({
           detail: `Upload failed: ${err.message}`,

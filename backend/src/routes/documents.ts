@@ -24,7 +24,7 @@ import {
   loadActiveVersion,
 } from "../lib/documentVersions";
 import { checkProjectAccess, ensureDocAccess } from "../lib/access";
-import { singleFileUpload } from "../lib/upload";
+import { singleFileUpload, UploadTooLargeError } from "../lib/upload";
 import { registerCaseStoredObject, syncDocumentVersionToCase } from "../lib/caseSync";
 import { isDemoBudgetError } from "../lib/demoUsage";
 
@@ -47,6 +47,12 @@ function sendDemoBudgetError(
     code: "demo_budget_exceeded",
   });
   return true;
+}
+
+function requestErrorStatus(err: unknown) {
+  if (isDemoBudgetError(err)) return 402;
+  if (err instanceof UploadTooLargeError) return 413;
+  return 400;
 }
 
 function arrayBufferCopy(bytes: Buffer): ArrayBuffer {
@@ -142,7 +148,7 @@ documentsRouter.post("/direct-upload", requireAuth, async (req, res) => {
   } catch (err) {
     console.error("[direct-upload] create failed", err);
     return void res
-      .status(isDemoBudgetError(err) ? 402 : 400)
+      .status(requestErrorStatus(err))
       .json({
         detail: errorDetail(err),
         ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
@@ -173,7 +179,7 @@ documentsRouter.post(
     } catch (err) {
       console.error("[direct-upload] complete failed", err);
       return void res
-        .status(isDemoBudgetError(err) ? 402 : 400)
+        .status(requestErrorStatus(err))
         .json({
           detail: errorDetail(err),
           ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
@@ -540,7 +546,7 @@ documentsRouter.post(
     } catch (err) {
       console.error("[versions/direct-upload] create failed", err);
       return void res
-        .status(isDemoBudgetError(err) ? 402 : 400)
+        .status(requestErrorStatus(err))
         .json({
           detail: errorDetail(err),
           ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
@@ -572,7 +578,7 @@ documentsRouter.post(
     } catch (err) {
       console.error("[versions/direct-upload] complete failed", err);
       return void res
-        .status(isDemoBudgetError(err) ? 402 : 400)
+        .status(requestErrorStatus(err))
         .json({
           detail: errorDetail(err),
           ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),

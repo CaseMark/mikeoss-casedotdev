@@ -180,6 +180,10 @@ receive a lifetime budget from `MIKE_DEMO_BUDGET_USD` (default `$5`). Every
 metered Case.dev call made with the demo key records usage in
 `demo_user_usage` and `demo_usage_events`. Users who save their own Case.dev key
 use that key first and are no longer charged against the hosted demo budget.
+By default, only LLM calls spend demo budget: the backend reserves `$0.10` for
+each LLM request, then charges `usage.cost` from Case.dev or token pricing from
+the live Case model catalog. Vault, Legal, Skills, Matters, and metadata calls
+default to `$0.00` in demo mode. Uploads are capped at 100 MB.
 
 To pause only the hosted demo UI without changing code, set
 `MIKE_DEMO_MODE=false` while keeping `MIKE_DEMO_CASE_API_KEY` configured. The
