@@ -6,6 +6,7 @@ import {
     type UserApiKeys,
 } from "./llm";
 import { getEffectiveCaseApiKey } from "./caseCredentials";
+import { getEffectiveProviderApiKeys } from "./providerCredentials";
 
 export type UserModelSettings = {
     title_model: string;
@@ -28,6 +29,10 @@ export async function getUserModelSettings(
         console.error("[userSettings] unable to load Case API key", err);
         return null;
     });
+    const providerKeys = await getEffectiveProviderApiKeys(userId, client).catch((err) => {
+        console.error("[userSettings] unable to load provider API keys", err);
+        return { anthropic: null, gemini: null };
+    });
     const api_keys: UserApiKeys = {
         case: caseKey?.apiKey ?? null,
         caseSource: caseKey?.source ?? null,
@@ -41,8 +46,8 @@ export async function getUserModelSettings(
                       operation: "llm.request",
                   }
                 : null,
-        claude: null,
-        gemini: null,
+        claude: providerKeys.anthropic?.apiKey ?? null,
+        gemini: providerKeys.gemini?.apiKey ?? null,
     };
 
     return {
@@ -61,6 +66,10 @@ export async function getUserApiKeys(
         console.error("[userSettings] unable to load Case API key", err);
         return null;
     });
+    const providerKeys = await getEffectiveProviderApiKeys(userId, client).catch((err) => {
+        console.error("[userSettings] unable to load provider API keys", err);
+        return { anthropic: null, gemini: null };
+    });
     return {
         case: caseKey?.apiKey ?? null,
         caseSource: caseKey?.source ?? null,
@@ -74,7 +83,7 @@ export async function getUserApiKeys(
                       operation: "llm.request",
                   }
                 : null,
-        claude: null,
-        gemini: null,
+        claude: providerKeys.anthropic?.apiKey ?? null,
+        gemini: providerKeys.gemini?.apiKey ?? null,
     };
 }

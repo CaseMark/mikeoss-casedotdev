@@ -298,6 +298,7 @@ CASE_DEFAULT_TABULAR_MODEL=casemark/core-large
 GEMINI_API_KEY=your-gemini-key
 ANTHROPIC_API_KEY=your-anthropic-key
 OPENROUTER_API_KEY=your-openrouter-key
+MIKE_ALLOW_SERVER_PROVIDER_KEY_FALLBACK=true
 RESEND_API_KEY=your-resend-key
 
 MIKE_LLM_DEBUG_STREAMS=false
@@ -336,6 +337,9 @@ Local env checklist
       MIKE_AUTH_RATE_LIMIT_MAX, MIKE_AUTH_CREDENTIAL_RATE_LIMIT_MAX
     Case API keys are normally saved per user in /account/models and power
     LLM routing plus canonical Case Vault document storage.
+    Optional BYOK model keys for direct Anthropic/Gemini routing can also be
+    saved in /account/models. Local env provider keys are used only when
+    MIKE_ALLOW_SERVER_PROVIDER_KEY_FALLBACK allows it.
     Optional only for legacy migration: R2_ENDPOINT_URL, R2_ACCESS_KEY_ID,
     R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME.
 

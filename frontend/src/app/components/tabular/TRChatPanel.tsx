@@ -35,6 +35,7 @@ import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
     getModelProvider,
     isModelAvailable,
+    type ModelProviderAvailability,
     type ModelProvider,
 } from "@/app/lib/modelAvailability";
 import type { ModelOption } from "@/app/lib/caseModels";
@@ -455,7 +456,7 @@ function TRChatInput({
     onCancel: () => void;
     model: string;
     onModelChange: (id: string) => void;
-    apiKeys: { caseApiKeyConfigured: boolean };
+    apiKeys: ModelProviderAvailability;
     models?: ModelOption[];
 }) {
     const [value, setValue] = useState("");
@@ -611,8 +612,16 @@ export function TRChatPanel({
     onChatIdChange,
 }: Props) {
     const { profile, updateModelPreference } = useUserProfile();
+    const anthropicStatus = profile?.providerCredentials.find(
+        (item) => item.provider === "anthropic",
+    );
+    const geminiStatus = profile?.providerCredentials.find(
+        (item) => item.provider === "gemini",
+    );
     const apiKeys = {
         caseApiKeyConfigured: profile?.caseApiKey.configured ?? false,
+        anthropicApiKeyConfigured: anthropicStatus?.configured ?? false,
+        geminiApiKeyConfigured: geminiStatus?.configured ?? false,
     };
     const currentModel = profile?.tabularModel ?? "casemark/core-large";
     const [apiKeyModalProvider, setApiKeyModalProvider] =

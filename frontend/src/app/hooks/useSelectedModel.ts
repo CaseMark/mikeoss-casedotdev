@@ -13,7 +13,12 @@ function readStored(): string {
 }
 
 function isAllowedCaseModelId(id: string): boolean {
-    return FALLBACK_CASE_MODELS.some((model) => model.id === id) || id.includes("/");
+    return (
+        FALLBACK_CASE_MODELS.some((model) => model.id === id) ||
+        id.includes("/") ||
+        id.startsWith("claude") ||
+        id.startsWith("gemini")
+    );
 }
 
 export function useSelectedModel(): [string, (id: string) => void] {
