@@ -11,6 +11,17 @@ import { CheckCircle2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { PoweredByCase } from "@/app/components/shared/PoweredByCase";
 
+const MIN_PASSWORD_LENGTH = 8;
+
+function signupErrorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    if (error && typeof error === "object" && "message" in error) {
+        const message = (error as { message?: unknown }).message;
+        if (typeof message === "string" && message.trim()) return message;
+    }
+    return "An error occurred during signup";
+}
+
 export default function SignupPage() {
     const router = useRouter();
     const { isAuthenticated, authLoading } = useAuth();
@@ -42,8 +53,8 @@ export default function SignupPage() {
         }
 
         // Validate password length
-        if (password.length < 6) {
-            setError("Password must be at least 6 characters");
+        if (password.length < MIN_PASSWORD_LENGTH) {
+            setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
             setLoading(false);
             return;
         }
@@ -84,11 +95,7 @@ export default function SignupPage() {
                 router.push("/assistant");
             }, 2000);
         } catch (error: unknown) {
-            setError(
-                error instanceof Error
-                    ? error.message
-                    : "An error occurred during signup",
-            );
+            setError(signupErrorMessage(error));
         } finally {
             setLoading(false);
         }
@@ -219,7 +226,7 @@ export default function SignupPage() {
                                 type="password"
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
-                                placeholder="Create a password (min. 6 characters)"
+                                placeholder={`Create a password (min. ${MIN_PASSWORD_LENGTH} characters)`}
                                 required
                                 className="w-full"
                             />
