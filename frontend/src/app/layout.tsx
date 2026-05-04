@@ -15,9 +15,9 @@ const ebGaramond = EB_Garamond({
 });
 
 export const metadata: Metadata = {
-    title: "Mike - AI Legal Platform",
+    title: "MikeOSS Case.dev Demo",
     description:
-        "AI-powered legal document analysis and contract review platform.",
+        "Case.dev powered open-source legal AI workspace for matters, vault-backed documents, skills, and legal research.",
     icons: {
         icon: [
             { url: "/icon.svg", type: "image/svg+xml" },

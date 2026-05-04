@@ -8,11 +8,38 @@ grounding, and Case DB/Postgres-compatible persistence.
 This project is developer-oriented software for legal workflows. It is not a
 law firm, lawyer, or substitute for professional legal advice.
 
+## Hosted Demo
+
+Try the hosted demo at [mike.casemark.dev](https://mike.casemark.dev).
+
+The hosted demo is backed by a shared Case.dev API key and includes a lifetime
+`$5` Case.dev usage budget per signed-in user. You can add your own Case.dev API
+key in **Account > Models** at any time; personal keys override the hosted demo
+key and bypass the demo budget. Clearing your key falls back to the shared demo
+key.
+
+If the hosted demo is paused, the app shows a lightweight landing page instead
+of the workspace. Operators can pause the demo by setting `MIKE_DEMO_MODE=false`
+while leaving `MIKE_DEMO_CASE_API_KEY` configured in the Vercel backend project.
+Forks and local installs are unaffected unless they opt into demo mode.
+
 ## Contents
 
 - `frontend/` - Next.js application
 - `backend/` - Express API, Better Auth, Case DB access, document processing, and migrations
 - `backend/migrations/000_one_shot_schema.sql` - one-shot Case DB/Postgres schema for fresh databases
+
+## What This Fork Adds
+
+- Case.dev LLM gateway and live model catalog
+- Case Vault as canonical document storage, indexing, search, chunks, extracted
+  text, downloads, and chat grounding
+- Case Matters as the workspace primitive behind Mike's Matters UI
+- Case Skills discovery and workflow import
+- Read-only Case Legal research tools in chat
+- Better Auth with encrypted per-user Case.dev keys
+- Optional BYOK Anthropic and Gemini LLM routing for local/private installs
+- Hosted demo mode with per-user usage metering
 
 Users configure credentials in Account > Models. Case.dev is the default and
 required provider for Vault storage, indexing, Skills, Matters, Legal, and the
@@ -82,6 +109,23 @@ Open `http://localhost:3000`.
 - LibreOffice for DOC/DOCX to PDF conversion
 - Strong backend secrets for Better Auth, download-token signing, Case key
   encryption, and Case.dev webhook verification
+
+## Demo Mode
+
+Demo Mode is intended for the hosted CaseMark deployment. It is inert for forks
+and local installs unless the backend has both `MIKE_DEMO_MODE=true` and
+`MIKE_DEMO_CASE_API_KEY`.
+
+When enabled, users without a personal Case.dev key use the shared demo key and
+receive a lifetime budget from `MIKE_DEMO_BUDGET_USD` (default `$5`). Every
+metered Case.dev call made with the demo key records usage in
+`demo_user_usage` and `demo_usage_events`. Users who save their own Case.dev key
+use that key first and are no longer charged against the hosted demo budget.
+
+To pause only the hosted demo UI without changing code, set
+`MIKE_DEMO_MODE=false` while keeping `MIKE_DEMO_CASE_API_KEY` configured. The
+frontend reads `/demo-status` and shows a public paused-demo landing page when
+that hosted-demo kill switch is active.
 
 ## Checks
 
