@@ -10,7 +10,10 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { isModelAvailable } from "@/app/lib/modelAvailability";
+import {
+    isModelAvailable,
+    type ModelProviderAvailability,
+} from "@/app/lib/modelAvailability";
 import {
     DEFAULT_MODEL_ID,
     FALLBACK_CASE_MODELS,
@@ -27,9 +30,7 @@ export const ALLOWED_MODEL_IDS = new Set(FALLBACK_CASE_MODELS.map((m) => m.id));
 interface Props {
     value: string;
     onChange: (id: string) => void;
-    apiKeys?: {
-        caseApiKeyConfigured: boolean;
-    };
+    apiKeys?: ModelProviderAvailability;
     models?: ModelOption[];
 }
 

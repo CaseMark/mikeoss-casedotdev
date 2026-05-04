@@ -33,6 +33,7 @@ import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
     getModelProvider,
     isModelAvailable,
+    providerCredentialState,
     type ModelProvider,
 } from "@/app/lib/modelAvailability";
 import { TRSidePanel } from "./TRSidePanel";
@@ -87,9 +88,10 @@ export function TRView({ reviewId, projectId }: Props) {
     const tableRef = useRef<TRTableHandle>(null);
     const router = useRouter();
     const { profile } = useUserProfile();
-    const apiKeys = {
-        caseApiKeyConfigured: profile?.caseApiKey.configured ?? false,
-    };
+    const { apiKeys } = providerCredentialState(
+        profile?.caseApiKey.configured ?? false,
+        profile?.providerCredentials,
+    );
     const tabularModel = profile?.tabularModel ?? "casemark/core-large";
 
     useEffect(() => {

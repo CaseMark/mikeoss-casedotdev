@@ -15,10 +15,14 @@ import {
     getCaseModelCatalog,
     getCaseApiKeyStatus,
     getDemoUsage,
+    getProviderCredentialStatuses,
     saveCaseApiKey,
+    saveProviderApiKey,
     type CaseModelCatalog,
     type CaseApiKeyStatus,
     type DemoUsageStatus,
+    type ProviderCredentialStatus,
+    type ProviderId,
 } from "@/app/lib/mikeApi";
 import {
     FALLBACK_CASE_MODELS,
@@ -59,6 +63,33 @@ const DEFAULT_DEMO_USAGE: DemoUsageStatus = {
     global_remaining_usd: null,
 };
 
+const DEFAULT_PROVIDER_CREDENTIALS: ProviderCredentialStatus[] = [
+    {
+        provider: "anthropic",
+        label: "Anthropic",
+        configured: false,
+        last4: null,
+        status: "missing",
+        verified_at: null,
+        last_checked_at: null,
+        source: "missing",
+        capabilities: { llm: false, model_count: null },
+        error: null,
+    },
+    {
+        provider: "gemini",
+        label: "Google Gemini",
+        configured: false,
+        last4: null,
+        status: "missing",
+        verified_at: null,
+        last_checked_at: null,
+        source: "missing",
+        capabilities: { llm: false, model_count: null },
+        error: null,
+    },
+];
+
 interface UserProfile {
     displayName: string | null;
     organisation: string | null;
@@ -70,6 +101,7 @@ interface UserProfile {
     caseApiKey: CaseApiKeyStatus;
     caseModels: ModelOption[];
     caseModelCatalog: Omit<CaseModelCatalog, "models">;
+    providerCredentials: ProviderCredentialStatus[];
     demoUsage: DemoUsageStatus;
 }
 
@@ -83,6 +115,10 @@ interface UserProfileContextType {
         value: string,
     ) => Promise<boolean>;
     updateCaseApiKey: (
+        value: string | null,
+    ) => Promise<{ ok: boolean; error?: string }>;
+    updateProviderApiKey: (
+        provider: ProviderId,
         value: string | null,
     ) => Promise<{ ok: boolean; error?: string }>;
     reloadProfile: () => Promise<void>;
@@ -112,6 +148,9 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
             const demoUsage = await getDemoUsage().catch(
                 () => DEFAULT_DEMO_USAGE,
             );
+            const providerCredentials = await getProviderCredentialStatuses().catch(
+                () => DEFAULT_PROVIDER_CREDENTIALS,
+            );
             const caseModels = caseCatalog.models.length
                 ? caseCatalog.models
                 : FALLBACK_CASE_MODELS;
@@ -119,6 +158,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 source: caseCatalog.source,
                 key_source: caseCatalog.key_source,
                 error: caseCatalog.error,
+                provider_errors: caseCatalog.provider_errors,
             };
 
             const data = await getUserProfile();
@@ -154,6 +194,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                     caseApiKey,
                     caseModels,
                     caseModelCatalog,
+                    providerCredentials,
                     demoUsage,
                 });
 
@@ -187,6 +228,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                     source: "fallback",
                     key_source: "missing",
                 },
+                providerCredentials: DEFAULT_PROVIDER_CREDENTIALS,
                 demoUsage: DEFAULT_DEMO_USAGE,
             });
         } finally {
@@ -285,8 +327,56 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                                   source: catalog.source,
                                   key_source: catalog.key_source,
                                   error: catalog.error,
+                                  provider_errors: catalog.provider_errors,
                               },
                               demoUsage,
+                          }
+                        : null,
+                );
+                return { ok: true };
+            } catch (err) {
+                return {
+                    ok: false,
+                    error: err instanceof Error ? err.message : String(err),
+                };
+            }
+        },
+        [user],
+    );
+
+    const updateProviderApiKey = useCallback(
+        async (
+            provider: ProviderId,
+            value: string | null,
+        ): Promise<{ ok: boolean; error?: string }> => {
+            if (!user) return { ok: false, error: "You must be signed in." };
+            try {
+                const status = await saveProviderApiKey(
+                    provider,
+                    value?.trim() ? value.trim() : null,
+                );
+                const catalog = await getCaseModelCatalog().catch(
+                    () => DEFAULT_CASE_MODEL_CATALOG,
+                );
+                setProfile((prev) =>
+                    prev
+                        ? {
+                              ...prev,
+                              providerCredentials: prev.providerCredentials.map(
+                                  (item) =>
+                                      item.provider === provider
+                                          ? status
+                                          : item,
+                              ),
+                              caseModels: catalog.models.length
+                                  ? catalog.models
+                                  : FALLBACK_CASE_MODELS,
+                              caseModelCatalog: {
+                                  source: catalog.source,
+                                  key_source: catalog.key_source,
+                                  error: catalog.error,
+                                  provider_errors: catalog.provider_errors,
+                              },
                           }
                         : null,
                 );
@@ -350,6 +440,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 updateOrganisation,
                 updateModelPreference,
                 updateCaseApiKey,
+                updateProviderApiKey,
                 reloadProfile,
                 incrementMessageCredits,
             }}

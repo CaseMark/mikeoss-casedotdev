@@ -10,6 +10,16 @@ import {
 } from "../lib/caseCredentials";
 import { FALLBACK_CASE_MODELS, getCaseModelCatalog } from "../lib/caseModels";
 import { getDemoUsageStatus } from "../lib/demoUsage";
+import {
+  clearProviderApiKey,
+  getEffectiveProviderApiKey,
+  getProviderCredentialStatuses,
+  listProviderModels,
+  nativeProviderModelOptions,
+  PROVIDERS,
+  saveProviderApiKey,
+  type ProviderId,
+} from "../lib/providerCredentials";
 
 export const userRouter = Router();
 
@@ -152,36 +162,98 @@ userRouter.get("/case-models", requireAuth, async (_req, res) => {
   const userId = res.locals.userId as string;
   const db = createServerDb();
   const effectiveKey = await getEffectiveCaseApiKey(userId, db);
-  if (!effectiveKey) {
-    res.json({
-      source: "fallback",
-      key_source: "missing",
-      models: FALLBACK_CASE_MODELS,
-      error: "Add a Case.dev API key to load the live model catalog.",
-    });
-    return;
-  }
+  let caseModels = FALLBACK_CASE_MODELS;
+  let source: "live" | "fallback" = "fallback";
+  let keySource: "user" | "server" | "demo" | "missing" =
+    effectiveKey?.source ?? "missing";
+  let error: string | undefined = effectiveKey
+    ? undefined
+    : "Add a Case.dev API key to load the live Case.dev model catalog.";
+
   try {
-    const models = await getCaseModelCatalog(
-      caseClientForEffectiveKey(effectiveKey, {
-        userId,
-        db,
-        service: "llm",
-        operation: "llm.model_catalog",
-      }),
-    );
-    res.json({
-      source: "live",
-      key_source: effectiveKey.source,
-      models,
-    });
+    if (effectiveKey) {
+      caseModels = await getCaseModelCatalog(
+        caseClientForEffectiveKey(effectiveKey, {
+          userId,
+          db,
+          service: "llm",
+          operation: "llm.model_catalog",
+        }),
+      );
+      source = "live";
+    }
   } catch (err) {
-    res.json({
-      source: "fallback",
-      key_source: effectiveKey.source,
-      models: FALLBACK_CASE_MODELS,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    source = "fallback";
+    keySource = effectiveKey?.source ?? "missing";
+    caseModels = FALLBACK_CASE_MODELS;
+    error = err instanceof Error ? err.message : String(err);
+  }
+
+  const providerErrors: { provider: ProviderId; error: string }[] = [];
+  const nativeModels = (
+    await Promise.all(
+      PROVIDERS.map(async (provider) => {
+        const effective = await getEffectiveProviderApiKey(userId, provider, db);
+        if (!effective) return [];
+        try {
+          const ids = await listProviderModels(provider, effective.apiKey);
+          return nativeProviderModelOptions(provider, ids, "live");
+        } catch {
+          const detail = "Provider model catalog unavailable; using static fallback.";
+          providerErrors.push({ provider, error: detail });
+          console.warn(
+            `[provider-models] falling back to static ${provider} catalog for user ${userId}`,
+          );
+          const ids = await listProviderModels(provider);
+          return nativeProviderModelOptions(provider, ids, "fallback");
+        }
+      }),
+    )
+  ).flat();
+
+  res.json({
+    source,
+    key_source: keySource,
+    models: [...caseModels, ...nativeModels],
+    ...(error ? { error } : {}),
+    ...(providerErrors.length ? { provider_errors: providerErrors } : {}),
+  });
+});
+
+// GET /user/provider-credentials — safe metadata for optional BYOK LLM keys
+userRouter.get("/provider-credentials", requireAuth, async (_req, res) => {
+  const userId = res.locals.userId as string;
+  const db = createServerDb();
+  res.json(await getProviderCredentialStatuses(userId, db));
+});
+
+// PUT /user/provider-credentials/:provider
+userRouter.put("/provider-credentials/:provider", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const db = createServerDb();
+  const apiKey =
+    typeof req.body?.api_key === "string" ? req.body.api_key.trim() : "";
+  try {
+    if (!apiKey) {
+      res.json(await clearProviderApiKey(userId, req.params.provider, db));
+      return;
+    }
+    res.json(await saveProviderApiKey(userId, req.params.provider, apiKey, db));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ detail });
+  }
+});
+
+// DELETE /user/provider-credentials/:provider
+userRouter.delete("/provider-credentials/:provider", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const db = createServerDb();
+  try {
+    res.json(await clearProviderApiKey(userId, req.params.provider, db));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ detail });
   }
 });
 

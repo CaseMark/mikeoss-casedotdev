@@ -35,6 +35,8 @@ import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
     getModelProvider,
     isModelAvailable,
+    providerCredentialState,
+    type ModelProviderAvailability,
     type ModelProvider,
 } from "@/app/lib/modelAvailability";
 import type { ModelOption } from "@/app/lib/caseModels";
@@ -455,7 +457,7 @@ function TRChatInput({
     onCancel: () => void;
     model: string;
     onModelChange: (id: string) => void;
-    apiKeys: { caseApiKeyConfigured: boolean };
+    apiKeys: ModelProviderAvailability;
     models?: ModelOption[];
 }) {
     const [value, setValue] = useState("");
@@ -611,9 +613,10 @@ export function TRChatPanel({
     onChatIdChange,
 }: Props) {
     const { profile, updateModelPreference } = useUserProfile();
-    const apiKeys = {
-        caseApiKeyConfigured: profile?.caseApiKey.configured ?? false,
-    };
+    const { apiKeys } = providerCredentialState(
+        profile?.caseApiKey.configured ?? false,
+        profile?.providerCredentials,
+    );
     const currentModel = profile?.tabularModel ?? "casemark/core-large";
     const [apiKeyModalProvider, setApiKeyModalProvider] =
         useState<ModelProvider | null>(null);

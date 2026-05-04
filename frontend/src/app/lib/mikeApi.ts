@@ -161,6 +161,25 @@ export interface CaseModelCatalog {
     key_source: "user" | "server" | "demo" | "missing";
     models: ModelOption[];
     error?: string;
+    provider_errors?: { provider: ProviderId; error: string }[];
+}
+
+export type ProviderId = "anthropic" | "gemini";
+
+export interface ProviderCredentialStatus {
+    provider: ProviderId;
+    label: string;
+    configured: boolean;
+    last4: string | null;
+    status: "verified" | "unverified" | "invalid" | "missing";
+    verified_at: string | null;
+    last_checked_at: string | null;
+    source: "user" | "server" | "demo" | "missing";
+    capabilities: {
+        llm: boolean;
+        model_count: number | null;
+    };
+    error: string | null;
 }
 
 export async function getCaseApiKeyStatus(): Promise<CaseApiKeyStatus> {
@@ -179,6 +198,26 @@ export async function saveCaseApiKey(
 
 export async function getCaseModelCatalog(): Promise<CaseModelCatalog> {
     return apiRequest<CaseModelCatalog>("/user/case-models");
+}
+
+export async function getProviderCredentialStatuses(): Promise<
+    ProviderCredentialStatus[]
+> {
+    return apiRequest<ProviderCredentialStatus[]>("/user/provider-credentials");
+}
+
+export async function saveProviderApiKey(
+    provider: ProviderId,
+    apiKey: string | null,
+): Promise<ProviderCredentialStatus> {
+    return apiRequest<ProviderCredentialStatus>(
+        `/user/provider-credentials/${provider}`,
+        {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ api_key: apiKey }),
+        },
+    );
 }
 
 export interface DemoUsageStatus {

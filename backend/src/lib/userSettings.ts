@@ -6,12 +6,23 @@ import {
     type UserApiKeys,
 } from "./llm";
 import { getEffectiveCaseApiKey } from "./caseCredentials";
+import { getEffectiveProviderApiKeys } from "./providerCredentials";
 
 export type UserModelSettings = {
     title_model: string;
     tabular_model: string;
     api_keys: UserApiKeys;
 };
+
+async function loadProviderKeys(
+    userId: string,
+    client: ReturnType<typeof createServerDb>,
+) {
+    return getEffectiveProviderApiKeys(userId, client).catch((err) => {
+        console.error("[userSettings] unable to load provider API keys", err);
+        return { anthropic: null, gemini: null };
+    });
+}
 
 export async function getUserModelSettings(
     userId: string,
@@ -28,6 +39,7 @@ export async function getUserModelSettings(
         console.error("[userSettings] unable to load Case API key", err);
         return null;
     });
+    const providerKeys = await loadProviderKeys(userId, client);
     const api_keys: UserApiKeys = {
         case: caseKey?.apiKey ?? null,
         caseSource: caseKey?.source ?? null,
@@ -41,8 +53,8 @@ export async function getUserModelSettings(
                       operation: "llm.request",
                   }
                 : null,
-        claude: null,
-        gemini: null,
+        claude: providerKeys.anthropic?.apiKey ?? null,
+        gemini: providerKeys.gemini?.apiKey ?? null,
     };
 
     return {
@@ -61,6 +73,7 @@ export async function getUserApiKeys(
         console.error("[userSettings] unable to load Case API key", err);
         return null;
     });
+    const providerKeys = await loadProviderKeys(userId, client);
     return {
         case: caseKey?.apiKey ?? null,
         caseSource: caseKey?.source ?? null,
@@ -74,7 +87,7 @@ export async function getUserApiKeys(
                       operation: "llm.request",
                   }
                 : null,
-        claude: null,
-        gemini: null,
+        claude: providerKeys.anthropic?.apiKey ?? null,
+        gemini: providerKeys.gemini?.apiKey ?? null,
     };
 }

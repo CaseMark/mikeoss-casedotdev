@@ -14,6 +14,11 @@ law firm, lawyer, or substitute for professional legal advice.
 - `backend/` - Express API, Better Auth, Case DB access, document processing, and migrations
 - `backend/migrations/000_one_shot_schema.sql` - one-shot Case DB/Postgres schema for fresh databases
 
+Users configure credentials in Account > Models. Case.dev is the default and
+required provider for Vault storage, indexing, Skills, Matters, Legal, and the
+Case model gateway. Optional encrypted Anthropic and Gemini keys can be added
+for direct BYOK LLM routing without changing document storage.
+
 ## Setup
 
 Install dependencies:

@@ -19,67 +19,48 @@ import {
     modelOptionsOrFallback,
     type ModelOption,
 } from "@/app/lib/caseModels";
+import {
+    providerCredentialState,
+    type ModelProviderAvailability,
+} from "@/app/lib/modelAvailability";
 import type {
     CaseApiKeyStatus,
     CaseModelCatalog,
     DemoUsageStatus,
+    ProviderCredentialStatus,
+    ProviderId,
 } from "@/app/lib/mikeApi";
 
 export default function ModelsAndApiKeysPage() {
-    const { profile, updateModelPreference, updateCaseApiKey } =
+    const {
+        profile,
+        updateModelPreference,
+        updateCaseApiKey,
+        updateProviderApiKey,
+    } =
         useUserProfile();
-    const apiKeys = {
-        caseApiKeyConfigured: profile?.caseApiKey.configured ?? false,
-    };
+    const { anthropicStatus, geminiStatus, apiKeys } =
+        providerCredentialState(
+            profile?.caseApiKey.configured ?? false,
+            profile?.providerCredentials,
+        );
     const models = modelOptionsOrFallback(profile?.caseModels);
     const keySource = profile?.caseApiKey.source ?? "missing";
     const usingServerKey = keySource === "server";
     const usingDemoKey = keySource === "demo";
 
     return (
-        <div className="space-y-4">
-            {/* Model Preferences */}
-            <div className="pb-6">
+        <div className="space-y-8 max-w-4xl">
+            <section className="space-y-4">
                 <div className="flex items-center gap-2 mb-4">
                     <h2 className="text-2xl font-medium font-serif">
-                        Model Preferences
+                        Case.dev
                     </h2>
                 </div>
-                <div className="space-y-4 max-w-md">
-                    <div>
-                        <label className="text-sm text-gray-600 block mb-2">
-                            Tabular review model
-                        </label>
-                        <TabularModelDropdown
-                            value={
-                                profile?.tabularModel ??
-                                "casemark/core-large"
-                            }
-                            apiKeys={apiKeys}
-                            models={models}
-                            onChange={(id) =>
-                                updateModelPreference("tabularModel", id)
-                            }
-                        />
-                    </div>
-                </div>
-            </div>
-
-            {/* API Keys */}
-            <div className="py-6">
-                <div className="flex items-center gap-2 mb-2">
-                    <h2 className="text-2xl font-medium font-serif">
-                        API Keys
-                    </h2>
-                </div>
-                <p className="text-sm text-gray-500 mb-4 max-w-xl">
-                    {usingDemoKey
-                        ? "This hosted demo uses a shared Case.dev key with a per-user budget."
-                        : "Add your Case.dev API key to use Mike's model gateway, vault indexing, document search, and Case-powered extraction features."}
-                </p>
-                <p className="text-xs text-gray-400 mb-4 max-w-xl">
-                    The key is validated by the backend and stored encrypted.
-                    Only the saved key status is shown here.
+                <p className="text-sm text-gray-500 max-w-2xl">
+                    Case.dev powers Vault storage, document indexing, Skills,
+                    Matters, Legal research, and the default model gateway.
+                    External model keys are optional add-ons for LLM routing only.
                 </p>
                 <CaseStatusSummary
                     status={profile?.caseApiKey}
@@ -96,12 +77,12 @@ export default function ModelsAndApiKeysPage() {
                                 Demo key active
                             </p>
                             <p className="mt-1 text-xs text-gray-500">
-                                Personal Case.dev keys are disabled in this hosted demo. Forked and local installs can still use their own key when Demo Mode is off.
+                                Personal keys are disabled in this hosted demo. Forked and local installs can still use their own Case.dev and model provider keys when Demo Mode is off.
                             </p>
                         </div>
                     ) : (
                         <ApiKeyField
-                            label="Case.dev API Key"
+                            label="Case.dev API key"
                             placeholder={
                                 profile?.caseApiKey.source === "user" &&
                                 profile.caseApiKey.last4
@@ -127,7 +108,88 @@ export default function ModelsAndApiKeysPage() {
                         />
                     )}
                 </div>
-            </div>
+            </section>
+
+            <section className="border-t border-gray-100 pt-6">
+                <div className="flex items-center gap-2 mb-4">
+                    <h2 className="text-2xl font-medium font-serif">
+                        Model Providers
+                    </h2>
+                </div>
+                <p className="text-sm text-gray-500 mb-4 max-w-2xl">
+                    Add your own Anthropic or Gemini key to route selected chat
+                    and tabular-review model calls directly to that provider.
+                    Vault, Skills, Matters, Legal, and storage continue to use Case.dev.
+                </p>
+                <div className="grid gap-4 md:grid-cols-2">
+                    {[anthropicStatus, geminiStatus]
+                        .filter(Boolean)
+                        .map((status) => (
+                            <ProviderKeyCard
+                                key={status!.provider}
+                                status={status!}
+                                demoMode={usingDemoKey}
+                                onSave={(provider, value) =>
+                                    updateProviderApiKey(provider, value)
+                                }
+                            />
+                        ))}
+                </div>
+            </section>
+
+            <section className="border-t border-gray-100 pt-6">
+                <div className="flex items-center gap-2 mb-4">
+                    <h2 className="text-2xl font-medium font-serif">
+                        Model Defaults
+                    </h2>
+                </div>
+                <div className="space-y-4 max-w-md">
+                    <div>
+                        <label className="text-sm text-gray-600 block mb-2">
+                            Tabular review model
+                        </label>
+                        <TabularModelDropdown
+                            value={
+                                profile?.tabularModel ??
+                                "casemark/core-large"
+                            }
+                            apiKeys={apiKeys}
+                            models={models}
+                            onChange={(id) =>
+                                updateModelPreference("tabularModel", id)
+                            }
+                        />
+                    </div>
+                </div>
+            </section>
+
+            <section className="border-t border-gray-100 pt-6">
+                <div className="flex items-center gap-2 mb-2">
+                    <h2 className="text-2xl font-medium font-serif">
+                        Storage
+                    </h2>
+                </div>
+                <div className="max-w-2xl rounded-md border border-gray-200 bg-white px-4 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                        <div>
+                            <p className="text-sm font-medium text-gray-900">
+                                Case Vault
+                            </p>
+                            <p className="mt-1 text-xs text-gray-500">
+                                Canonical storage for uploads, generated DOCX files, PDF renditions, downloads, indexing, and citations.
+                            </p>
+                        </div>
+                        <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">
+                            Active
+                        </span>
+                    </div>
+                    <div className="mt-3 rounded-md border border-gray-100 bg-gray-50 px-3 py-2">
+                        <p className="text-xs text-gray-500">
+                            Legacy R2 is migration-only in this fork. New uploads always use Case Vault; run the R2 migration helper only for old rows that still point at legacy storage.
+                        </p>
+                    </div>
+                </div>
+            </section>
         </div>
     );
 }
@@ -212,6 +274,14 @@ function CaseStatusSummary({
                     : ""}
                 {modelCatalog?.error ? ` (${modelCatalog.error})` : ""}
             </p>
+            {!!modelCatalog?.provider_errors?.length && (
+                <p className="mt-2 text-xs text-amber-600">
+                    Provider catalog fallback:{" "}
+                    {modelCatalog.provider_errors
+                        .map((item) => `${item.provider}: ${item.error}`)
+                        .join("; ")}
+                </p>
+            )}
         </div>
     );
 }
@@ -291,6 +361,83 @@ function StatusPill({
     );
 }
 
+function ProviderKeyCard({
+    status,
+    demoMode,
+    onSave,
+}: {
+    status: ProviderCredentialStatus;
+    demoMode: boolean;
+    onSave: (
+        provider: ProviderId,
+        value: string | null,
+    ) => Promise<{ ok: boolean; error?: string }>;
+}) {
+    const sourceLabel =
+        status.source === "user"
+            ? "Personal key"
+            : status.source === "server"
+              ? "Local server key"
+              : status.source === "demo"
+                ? "Disabled in demo"
+                : "No key";
+    const detail =
+        status.source === "user" && status.configured && status.last4
+            ? `Verified key ending in ${status.last4}`
+            : status.source === "user" && status.last4
+              ? `Previous key ending in ${status.last4} is not active.`
+            : status.source === "server" && status.last4
+              ? `Using local server key ending in ${status.last4}`
+              : status.error ?? "Optional LLM-only provider.";
+
+    return (
+        <div className="rounded-md border border-gray-200 bg-white px-4 py-3">
+            <div className="mb-3 flex items-start justify-between gap-3">
+                <div>
+                    <p className="text-sm font-medium text-gray-900">
+                        {status.label}
+                    </p>
+                    <p className="text-xs text-gray-500">{sourceLabel}</p>
+                </div>
+                <span
+                    className={`rounded-full px-2 py-0.5 text-xs ${
+                        status.configured
+                            ? "bg-emerald-50 text-emerald-700"
+                            : "bg-gray-100 text-gray-500"
+                    }`}
+                >
+                    {status.configured ? "Ready" : "Optional"}
+                </span>
+            </div>
+            <p className="mb-3 text-xs text-gray-500">{detail}</p>
+            {demoMode ? (
+                <div className="rounded-md border border-gray-100 bg-gray-50 px-3 py-2 text-xs text-gray-500">
+                    External provider keys are disabled in Demo Mode.
+                </div>
+            ) : (
+                <ApiKeyField
+                    label={`${status.label} API key`}
+                    placeholder={
+                        status.source === "user" &&
+                        status.configured &&
+                        status.last4
+                            ? `Saved key ending in ${status.last4}`
+                            : status.source === "server" && status.last4
+                              ? `Using local server key ending in ${status.last4}`
+                              : status.provider === "anthropic"
+                                ? "sk-ant-..."
+                                : "AIza..."
+                    }
+                    error={status.error ?? undefined}
+                    onSave={(value) => onSave(status.provider, value.trim())}
+                    canClear={status.source === "user" && status.configured}
+                    onClear={() => onSave(status.provider, null)}
+                />
+            )}
+        </div>
+    );
+}
+
 function TabularModelDropdown({
     value,
     onChange,
@@ -299,7 +446,7 @@ function TabularModelDropdown({
 }: {
     value: string;
     onChange: (id: string) => void;
-    apiKeys: { caseApiKeyConfigured: boolean };
+    apiKeys: ModelProviderAvailability;
     models: ModelOption[];
 }) {
     const [isOpen, setIsOpen] = useState(false);
