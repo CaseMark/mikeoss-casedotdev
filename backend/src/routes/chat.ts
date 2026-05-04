@@ -398,13 +398,24 @@ chatRouter.post("/", requireAuth, async (req, res) => {
 
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
     if (lastUser) {
-        await db.from("chat_messages").insert({
-            chat_id: chatId,
-            role: "user",
-            content: lastUser.content,
-            files: lastUser.files ?? null,
-            workflow: lastUser.workflow ?? null,
-        });
+        const { error: userMessageError } = await db
+            .from("chat_messages")
+            .insert({
+                chat_id: chatId,
+                role: "user",
+                content: lastUser.content,
+                files: lastUser.files ?? null,
+                workflow: lastUser.workflow ?? null,
+            });
+        if (userMessageError) {
+            console.error(
+                "[chat/stream] failed to store user message",
+                userMessageError,
+            );
+            return void res
+                .status(500)
+                .json({ detail: "Failed to save chat message" });
+        }
     }
 
     const { docIndex, docStore } = await buildDocContext(
@@ -465,12 +476,20 @@ chatRouter.post("/", requireAuth, async (req, res) => {
         });
 
         const annotations = extractAnnotations(fullText, docIndex, events);
-        await db.from("chat_messages").insert({
-            chat_id: chatId,
-            role: "assistant",
-            content: events.length ? events : null,
-            annotations: annotations.length ? annotations : null,
-        });
+        const { error: assistantMessageError } = await db
+            .from("chat_messages")
+            .insert({
+                chat_id: chatId,
+                role: "assistant",
+                content: events.length ? events : null,
+                annotations: annotations.length ? annotations : null,
+            });
+        if (assistantMessageError) {
+            console.error(
+                "[chat/stream] failed to store assistant message",
+                assistantMessageError,
+            );
+        }
 
         if (!chatTitle && lastUser?.content) {
             await db
