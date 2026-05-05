@@ -15,7 +15,6 @@ import { getUserApiKeys, getUserModelSettings } from "../lib/userSettings";
 import { getCaseTextForDocument } from "../lib/caseSync";
 import {
     checkProjectAccess,
-    ensureDocAccess,
     ensureReviewAccess,
     listAccessibleProjectIds,
 } from "../lib/access";
@@ -105,20 +104,51 @@ async function requireAccessibleTabularDocuments(params: {
         throw new RouteError(404, "Document not found");
     }
 
-    const ordered: TabularDocumentRow[] = [];
-    for (const id of ids) {
-        const doc = byId.get(id);
-        if (!doc) throw new RouteError(404, "Document not found");
-        if (params.projectId && doc.project_id !== params.projectId) {
-            throw new RouteError(404, "Document not found");
-        }
-        const access = await ensureDocAccess(
-            { user_id: doc.user_id, project_id: doc.project_id },
+    if (params.projectId) {
+        const access = await checkProjectAccess(
+            params.projectId,
             params.userId,
             params.userEmail,
             params.db,
         );
-        if (!access.ok) throw new RouteError(404, "Document not found");
+        if (!access.ok) throw new RouteError(404, "Project not found");
+
+        return ids.map((id) => {
+            const doc = byId.get(id);
+            if (!doc || doc.project_id !== params.projectId) {
+                throw new RouteError(404, "Document not found");
+            }
+            return doc;
+        });
+    }
+
+    const projectAccessCache = new Map<string, boolean>();
+    const ordered: TabularDocumentRow[] = [];
+    for (const id of ids) {
+        const doc = byId.get(id);
+        if (!doc) throw new RouteError(404, "Document not found");
+
+        if (doc.user_id === params.userId) {
+            ordered.push(doc);
+            continue;
+        }
+        if (!doc.project_id) {
+            throw new RouteError(404, "Document not found");
+        }
+
+        let hasProjectAccess = projectAccessCache.get(doc.project_id);
+        if (hasProjectAccess === undefined) {
+            const access = await checkProjectAccess(
+                doc.project_id,
+                params.userId,
+                params.userEmail,
+                params.db,
+            );
+            hasProjectAccess = access.ok;
+            projectAccessCache.set(doc.project_id, hasProjectAccess);
+        }
+        if (!hasProjectAccess)
+            throw new RouteError(404, "Document not found");
         ordered.push(doc);
     }
     return ordered;
