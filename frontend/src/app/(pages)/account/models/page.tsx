@@ -83,7 +83,7 @@ export default function ModelsAndApiKeysPage() {
                 {hostedDemo && (
                     <DemoBudgetSummary
                         usage={profile?.demoUsage}
-                        usingDemoKey={usingDemoKey}
+                        caseKeyStatus={profile.caseApiKey}
                     />
                 )}
                 <div className="space-y-4 max-w-xl">
@@ -307,12 +307,16 @@ function CaseStatusSummary({
 
 function DemoBudgetSummary({
     usage,
-    usingDemoKey,
+    caseKeyStatus,
 }: {
     usage?: DemoUsageStatus;
-    usingDemoKey: boolean;
+    caseKeyStatus: CaseApiKeyStatus;
 }) {
     if (!usage?.enabled) return null;
+    const usingDemoKey = caseKeyStatus.source === "demo";
+    const personalKeyActive =
+        caseKeyStatus.source === "user" && caseKeyStatus.configured;
+    const bypassed = !usingDemoKey;
     const limit = formatUsd(usage.limit_usd);
     const spent = formatUsd(usage.spent_usd);
     const reserved = usage.reserved_usd > 0 ? formatUsd(usage.reserved_usd) : null;
@@ -330,8 +334,10 @@ function DemoBudgetSummary({
                         Demo budget
                     </p>
                     <p className="text-xs text-gray-500">
-                        {!usingDemoKey
+                        {personalKeyActive
                             ? "Your personal Case.dev key is active, so demo credits are not being used."
+                            : bypassed
+                              ? "Demo credits are available, but this session is not currently using the shared demo key."
                             : usage.blocked
                             ? "Budget exhausted for this account."
                             : `${remaining} remaining of ${limit}`}
@@ -339,12 +345,14 @@ function DemoBudgetSummary({
                 </div>
                 <span
                     className={`rounded-full px-2 py-0.5 text-xs ${
-                        usage.blocked
+                        bypassed
+                            ? "bg-gray-100 text-gray-600"
+                            : usage.blocked
                             ? "bg-red-50 text-red-700"
                             : "bg-emerald-50 text-emerald-700"
                     }`}
                 >
-                    {!usingDemoKey
+                    {bypassed
                         ? "Bypassed"
                         : usage.blocked
                           ? "Exhausted"
