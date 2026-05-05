@@ -37,6 +37,26 @@ function errorDetail(err: unknown) {
   return err instanceof Error ? err.message : String(err);
 }
 
+function safeRequestErrorDetail(err: unknown): string | null {
+  const detail = errorDetail(err);
+  if (
+    detail === "filename is required" ||
+    detail === "size_bytes must be a positive number" ||
+    detail === "Document not found" ||
+    detail === "No pending upload version found" ||
+    detail === "Version not found" ||
+    /^Unsupported file type: [a-z0-9]*\. Allowed: pdf, docx, doc$/i.test(
+      detail,
+    ) ||
+    /^Uploaded file type \([a-z0-9]+\) does not match document type \([a-z0-9]+\)\.$/i.test(
+      detail,
+    )
+  ) {
+    return detail;
+  }
+  return null;
+}
+
 function sendDemoBudgetError(
   res: import("express").Response,
   err: unknown,
@@ -53,7 +73,38 @@ function sendDemoBudgetError(
 function requestErrorStatus(err: unknown) {
   if (isDemoBudgetError(err)) return 402;
   if (err instanceof UploadTooLargeError) return 413;
+  const safeDetail = safeRequestErrorDetail(err);
+  if (
+    safeDetail === "Document not found" ||
+    safeDetail === "Version not found" ||
+    safeDetail === "No pending upload version found"
+  ) {
+    return 404;
+  }
+  if (safeDetail) return 400;
   return 400;
+}
+
+function sendSafeDocumentError(
+  res: import("express").Response,
+  err: unknown,
+  fallback: { detail: string; code: string; status?: number },
+) {
+  if (sendDemoBudgetError(res, err)) return;
+  if (err instanceof UploadTooLargeError) {
+    return void res
+      .status(413)
+      .json({ detail: err.message, code: "upload_too_large" });
+  }
+  const safeDetail = safeRequestErrorDetail(err);
+  if (safeDetail) {
+    return void res
+      .status(requestErrorStatus(err))
+      .json({ detail: safeDetail, code: "invalid_document_request" });
+  }
+  return void res
+    .status(fallback.status ?? 500)
+    .json({ detail: fallback.detail, code: fallback.code });
 }
 
 function arrayBufferCopy(bytes: Buffer): ArrayBuffer {
@@ -148,12 +199,10 @@ documentsRouter.post("/direct-upload", requireAuth, async (req, res) => {
     res.status(201).json(session);
   } catch (err) {
     console.error("[direct-upload] create failed", err);
-    return void res
-      .status(requestErrorStatus(err))
-      .json({
-        detail: errorDetail(err),
-        ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
-      });
+    return sendSafeDocumentError(res, err, {
+      detail: "Failed to create upload session.",
+      code: "upload_session_failed",
+    });
   }
 });
 
@@ -179,12 +228,10 @@ documentsRouter.post(
       res.json(updated);
     } catch (err) {
       console.error("[direct-upload] complete failed", err);
-      return void res
-        .status(requestErrorStatus(err))
-        .json({
-          detail: errorDetail(err),
-          ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
-        });
+      return sendSafeDocumentError(res, err, {
+        detail: "Failed to complete upload.",
+        code: "upload_complete_failed",
+      });
     }
   },
 );
@@ -390,8 +437,11 @@ documentsRouter.get("/:documentId/url", requireAuth, async (req, res) => {
       db,
     });
   } catch (err) {
-    if (sendDemoBudgetError(res, err)) return;
-    return void res.status(500).json({ detail: errorDetail(err) });
+    console.error("[documents/url] signed URL failed", err);
+    return sendSafeDocumentError(res, err, {
+      detail: "Document URL unavailable.",
+      code: "document_url_unavailable",
+    });
   }
   if (!url)
     return void res.status(503).json({ detail: "Storage not configured" });
@@ -438,8 +488,11 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
   try {
     raw = await downloadFile(active.storage_path, { db });
   } catch (err) {
-    if (sendDemoBudgetError(res, err)) return;
-    return void res.status(500).json({ detail: errorDetail(err) });
+    console.error("[documents/docx] storage read failed", err);
+    return sendSafeDocumentError(res, err, {
+      detail: "Document unavailable.",
+      code: "document_unavailable",
+    });
   }
   if (!raw)
     return void res.status(404).json({ detail: "Document bytes not available" });
@@ -550,12 +603,10 @@ documentsRouter.post(
       res.status(201).json(session);
     } catch (err) {
       console.error("[versions/direct-upload] create failed", err);
-      return void res
-        .status(requestErrorStatus(err))
-        .json({
-          detail: errorDetail(err),
-          ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
-        });
+      return sendSafeDocumentError(res, err, {
+        detail: "Failed to create version upload session.",
+        code: "version_upload_session_failed",
+      });
     }
   },
 );
@@ -582,12 +633,10 @@ documentsRouter.post(
       res.status(201).json(updated);
     } catch (err) {
       console.error("[versions/direct-upload] complete failed", err);
-      return void res
-        .status(requestErrorStatus(err))
-        .json({
-          detail: errorDetail(err),
-          ...(isDemoBudgetError(err) ? { code: "demo_budget_exceeded" } : {}),
-        });
+      return sendSafeDocumentError(res, err, {
+        detail: "Failed to complete version upload.",
+        code: "version_upload_complete_failed",
+      });
     }
   },
 );
@@ -666,14 +715,10 @@ documentsRouter.post(
       );
     } catch (e) {
       console.error("[versions/upload] storage write failed", e);
-      return void res
-        .status(isDemoBudgetError(e) ? 402 : 500)
-        .json({
-          detail: isDemoBudgetError(e)
-            ? errorDetail(e)
-            : "Failed to upload new version.",
-          ...(isDemoBudgetError(e) ? { code: "demo_budget_exceeded" } : {}),
-        });
+      return sendSafeDocumentError(res, e, {
+        detail: "Failed to upload new version.",
+        code: "version_upload_failed",
+      });
     }
 
     // Render this version's bytes to PDF up front so /display can show
@@ -1640,12 +1685,11 @@ async function handleDocumentUpload(
     return void res.status(201).json(responseDoc);
   } catch (e) {
     await db.from("documents").update({ status: "error" }).eq("id", doc.id);
-    return void res
-      .status(isDemoBudgetError(e) ? 402 : 500)
-      .json({
-        detail: `Document processing failed: ${errorDetail(e)}`,
-        ...(isDemoBudgetError(e) ? { code: "demo_budget_exceeded" } : {}),
-      });
+    console.error("[documents/upload] processing failed", e);
+    return sendSafeDocumentError(res, e, {
+      detail: "Document processing failed.",
+      code: "document_processing_failed",
+    });
   }
 }
 

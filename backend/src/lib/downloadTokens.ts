@@ -1,12 +1,12 @@
 import crypto from "crypto";
 
 /**
- * HMAC-signed, non-expiring download tokens.
+ * HMAC-signed, expiring download tokens.
  *
  * The token encodes the opaque storage URI + filename; the backend route
  * `/download/:token` validates the signature and streams the file. This
- * gives persistent links safe to store in chat history without signed-URL
- * expiry or exposing Case Vault credentials to the browser.
+ * gives authenticated links safe to store in chat history without exposing
+ * Case Vault credentials to the browser.
  */
 
 const DEV_SECRET = "dev-secret";
@@ -64,13 +64,23 @@ function timingSafeEqStr(a: string, b: string): boolean {
     return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
+function downloadTokenTtlSeconds(): number {
+    const parsed = Number.parseInt(
+        process.env.DOWNLOAD_TOKEN_TTL_SECONDS ?? "",
+        10,
+    );
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 7 * 24 * 60 * 60;
+}
+
+function allowLegacyDownloadTokens(): boolean {
+    return process.env.DOWNLOAD_TOKEN_ALLOW_LEGACY === "true";
+}
+
 export function signDownload(path: string, filename: string): string {
-    const payload = JSON.stringify({ p: path, f: filename });
+    const expiresAt = Math.floor(Date.now() / 1000) + downloadTokenTtlSeconds();
+    const payload = JSON.stringify({ p: path, f: filename, e: expiresAt });
     const enc = b64urlEncode(Buffer.from(payload, "utf8"));
-    const sig = crypto
-        .createHmac("sha256", getSecret())
-        .update(enc)
-        .digest();
+    const sig = crypto.createHmac("sha256", getSecret()).update(enc).digest();
     return `${enc}.${b64urlEncode(sig)}`;
 }
 
@@ -89,8 +99,14 @@ export function verifyDownload(
         const parsed = JSON.parse(b64urlDecode(enc).toString("utf8")) as {
             p: string;
             f: string;
+            e?: number;
         };
         if (!parsed?.p || !parsed?.f) return null;
+        if (typeof parsed.e !== "number") {
+            if (!allowLegacyDownloadTokens()) return null;
+        } else if (parsed.e <= Math.floor(Date.now() / 1000)) {
+            return null;
+        }
         return { path: parsed.p, filename: parsed.f };
     } catch {
         return null;

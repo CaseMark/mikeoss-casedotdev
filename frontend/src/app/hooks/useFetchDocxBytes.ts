@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { documentLoadError } from "../lib/documentLoadError";
 
 export interface FetchDocxResult {
     bytes: ArrayBuffer | null;
@@ -17,26 +18,6 @@ export interface FetchDocxResult {
 // key share a single in-flight request.
 const bytesCache = new Map<string, ArrayBuffer>();
 const inFlight = new Map<string, Promise<ArrayBuffer>>();
-
-async function documentLoadError(response: Response): Promise<Error> {
-    let message = `HTTP ${response.status}`;
-    try {
-        const body = (await response.json()) as {
-            code?: string;
-            detail?: string;
-            error?: string;
-        };
-        if (body.code === "demo_budget_exceeded") {
-            message =
-                "This account has reached its demo credit limit. Add your own Case.dev key in Account > Models or ask the demo operator to reset your budget.";
-        } else {
-            message = body.detail ?? body.error ?? message;
-        }
-    } catch {
-        /* keep HTTP fallback */
-    }
-    return new Error(message);
-}
 
 function cacheKey(
     documentId: string,

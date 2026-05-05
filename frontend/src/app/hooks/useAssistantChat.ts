@@ -24,6 +24,19 @@ function findLastContentIndex(events: AssistantEvent[]): number {
     return -1;
 }
 
+function messageFromStreamError(data: Record<string, unknown>): string {
+    if (data.code === "demo_budget_exceeded") {
+        return "This account has reached its demo credit limit. Please contact the team to increase or reset your demo credits.";
+    }
+    if (data.code === "insufficient_quota") {
+        return "The model provider is out of available credits right now. Please try again later or contact the team.";
+    }
+    if (typeof data.message === "string" && data.message.trim()) {
+        return data.message;
+    }
+    return "Sorry, something went wrong while generating the response.";
+}
+
 export function useAssistantChat({
     initialMessages = [],
     chatId: initialChatId,
@@ -364,8 +377,9 @@ export function useAssistantChat({
 
             const decoder = new TextDecoder();
             let buffer = "";
+            let streamedError: string | null = null;
 
-            while (true) {
+            readLoop: while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
@@ -388,6 +402,13 @@ export function useAssistantChat({
                             setChatId(data.chatId);
                             setCurrentChatId(data.chatId);
                             continue;
+                        }
+
+                        if (data.type === "error") {
+                            streamedError = messageFromStreamError(
+                                data as Record<string, unknown>,
+                            );
+                            break readLoop;
                         }
 
                         if (data.type === "content_done") {
@@ -784,6 +805,14 @@ export function useAssistantChat({
                         );
                     }
                 }
+            }
+
+            if (streamedError) {
+                stopDrip();
+                clearStreamingPlaceholders();
+                finalizeStreamingContent();
+                finalizeStreamingReasoning();
+                throw new Error(streamedError);
             }
 
             flushDrip();

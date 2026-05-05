@@ -53,8 +53,28 @@ chatRouter.get("/", requireAuth, async (req, res) => {
 // POST /chat/create
 chatRouter.post("/create", requireAuth, async (req, res) => {
     const userId = res.locals.userId as string;
-    const projectId: string | null = req.body.project_id ?? null;
+    const userEmail = res.locals.userEmail as string | undefined;
+    if (
+        req.body.project_id != null &&
+        typeof req.body.project_id !== "string"
+    ) {
+        return void res.status(400).json({ detail: "Invalid project_id" });
+    }
+    const projectId: string | null =
+        typeof req.body.project_id === "string" && req.body.project_id.trim()
+            ? req.body.project_id.trim()
+            : null;
     const db = createServerDb();
+    if (projectId) {
+        const access = await checkProjectAccess(
+            projectId,
+            userId,
+            userEmail,
+            db,
+        );
+        if (!access.ok)
+            return void res.status(404).json({ detail: "Project not found" });
+    }
     const { data, error } = await db
         .from("chats")
         .insert({ user_id: userId, project_id: projectId ?? undefined })
@@ -329,6 +349,13 @@ chatRouter.post("/", requireAuth, async (req, res) => {
         project_id?: string;
         model?: string;
     };
+    if (project_id != null && typeof project_id !== "string") {
+        return void res.status(400).json({ detail: "Invalid project_id" });
+    }
+    const requestedProjectId =
+        typeof project_id === "string" && project_id.trim()
+            ? project_id.trim()
+            : null;
 
     console.log("[chat/stream] incoming request", {
         userId,
@@ -342,6 +369,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     const db = createServerDb();
     let chatId = chat_id ?? null;
     let chatTitle: string | null = null;
+    let effectiveProjectId: string | null = null;
 
     if (chatId) {
         // Either chat owner OR a member of the chat's project can post.
@@ -361,15 +389,18 @@ chatRouter.post("/", requireAuth, async (req, res) => {
             canUse = access.ok;
         }
         if (!canUse || !existing) chatId = null;
-        else chatTitle = existing.title;
+        else {
+            chatTitle = existing.title;
+            effectiveProjectId = (existing.project_id as string | null) ?? null;
+        }
     }
 
     if (!chatId) {
         // If creating a chat tied to a project, the user must have access
         // to the project (own or shared).
-        if (project_id) {
+        if (requestedProjectId) {
             const access = await checkProjectAccess(
-                project_id,
+                requestedProjectId,
                 userId,
                 userEmail,
                 db,
@@ -381,7 +412,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
         }
         const { data: newChat, error } = await db
             .from("chats")
-            .insert({ user_id: userId, project_id: project_id ?? null })
+            .insert({ user_id: userId, project_id: requestedProjectId })
             .select("id, title")
             .single();
         if (error || !newChat) {
@@ -392,19 +423,31 @@ chatRouter.post("/", requireAuth, async (req, res) => {
         }
         chatId = newChat.id as string;
         chatTitle = newChat.title;
+        effectiveProjectId = requestedProjectId;
     }
 
     console.log("[chat/stream] resolved chatId", chatId);
 
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
     if (lastUser) {
-        await db.from("chat_messages").insert({
-            chat_id: chatId,
-            role: "user",
-            content: lastUser.content,
-            files: lastUser.files ?? null,
-            workflow: lastUser.workflow ?? null,
-        });
+        const { error: userMessageError } = await db
+            .from("chat_messages")
+            .insert({
+                chat_id: chatId,
+                role: "user",
+                content: lastUser.content,
+                files: lastUser.files ?? null,
+                workflow: lastUser.workflow ?? null,
+            });
+        if (userMessageError) {
+            console.error(
+                "[chat/stream] failed to store user message",
+                userMessageError,
+            );
+            return void res
+                .status(500)
+                .json({ detail: "Failed to save chat message" });
+        }
     }
 
     const { docIndex, docStore } = await buildDocContext(
@@ -456,7 +499,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
             workflowStore,
             model,
             apiKeys,
-            projectId: project_id ?? null,
+            projectId: effectiveProjectId,
         });
 
         console.log("[chat/stream] LLM stream finished", {
@@ -465,12 +508,20 @@ chatRouter.post("/", requireAuth, async (req, res) => {
         });
 
         const annotations = extractAnnotations(fullText, docIndex, events);
-        await db.from("chat_messages").insert({
-            chat_id: chatId,
-            role: "assistant",
-            content: events.length ? events : null,
-            annotations: annotations.length ? annotations : null,
-        });
+        const { error: assistantMessageError } = await db
+            .from("chat_messages")
+            .insert({
+                chat_id: chatId,
+                role: "assistant",
+                content: events.length ? events : null,
+                annotations: annotations.length ? annotations : null,
+            });
+        if (assistantMessageError) {
+            console.error(
+                "[chat/stream] failed to store assistant message",
+                assistantMessageError,
+            );
+        }
 
         if (!chatTitle && lastUser?.content) {
             await db
