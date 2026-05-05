@@ -80,8 +80,11 @@ export default function ModelsAndApiKeysPage() {
                     modelCatalog={profile?.caseModelCatalog}
                     modelCount={models.length}
                 />
-                {usingDemoKey && (
-                    <DemoBudgetSummary usage={profile?.demoUsage} />
+                {hostedDemo && (
+                    <DemoBudgetSummary
+                        usage={profile?.demoUsage}
+                        usingDemoKey={usingDemoKey}
+                    />
                 )}
                 <div className="space-y-4 max-w-xl">
                     {usingDemoKey && (
@@ -302,7 +305,13 @@ function CaseStatusSummary({
     );
 }
 
-function DemoBudgetSummary({ usage }: { usage?: DemoUsageStatus }) {
+function DemoBudgetSummary({
+    usage,
+    usingDemoKey,
+}: {
+    usage?: DemoUsageStatus;
+    usingDemoKey: boolean;
+}) {
     if (!usage?.enabled) return null;
     const limit = formatUsd(usage.limit_usd);
     const spent = formatUsd(usage.spent_usd);
@@ -321,7 +330,9 @@ function DemoBudgetSummary({ usage }: { usage?: DemoUsageStatus }) {
                         Demo budget
                     </p>
                     <p className="text-xs text-gray-500">
-                        {usage.blocked
+                        {!usingDemoKey
+                            ? "Your personal Case.dev key is active, so demo credits are not being used."
+                            : usage.blocked
                             ? "Budget exhausted for this account."
                             : `${remaining} remaining of ${limit}`}
                     </p>
@@ -333,7 +344,11 @@ function DemoBudgetSummary({ usage }: { usage?: DemoUsageStatus }) {
                             : "bg-emerald-50 text-emerald-700"
                     }`}
                 >
-                    {usage.blocked ? "Exhausted" : "Active"}
+                    {!usingDemoKey
+                        ? "Bypassed"
+                        : usage.blocked
+                          ? "Exhausted"
+                          : "Active"}
                 </span>
             </div>
             <div className="mt-3 h-2 overflow-hidden rounded-full bg-gray-100">
