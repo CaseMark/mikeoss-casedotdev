@@ -220,7 +220,11 @@ advisories for vulnerability reports; see `SECURITY.md`.
 For production, set `CASE_WEBHOOK_SHARED_SECRET`, `DOWNLOAD_SIGNING_SECRET`,
 `BETTER_AUTH_SECRET`, and `CASE_KEY_ENCRYPTION_SECRET` to non-placeholder values.
 Unsigned Case.dev webhooks are only available when explicitly enabled for local
-development with `CASE_WEBHOOK_ALLOW_UNSIGNED=true`.
+development with `CASE_WEBHOOK_ALLOW_UNSIGNED=true`. Download links are
+HMAC-signed, authenticated, and expire after `DOWNLOAD_TOKEN_TTL_SECONDS`
+(default seven days); keep `DOWNLOAD_TOKEN_ALLOW_LEGACY=false` unless you are
+briefly migrating old no-expiry links. Auth and expensive AI routes are
+rate-limited with `MIKE_AUTH_*` and `MIKE_AI_*` settings.
 
 ## License
 

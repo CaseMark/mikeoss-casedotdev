@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { requireAuth } from "../middleware/auth";
 import { createServerDb } from "../lib/db";
 import { downloadFile } from "../lib/storage";
@@ -15,6 +15,7 @@ import { getUserApiKeys, getUserModelSettings } from "../lib/userSettings";
 import { getCaseTextForDocument } from "../lib/caseSync";
 import {
     checkProjectAccess,
+    ensureDocAccess,
     ensureReviewAccess,
     listAccessibleProjectIds,
 } from "../lib/access";
@@ -46,6 +47,105 @@ function formatPromptSuffix(format?: string, tags?: string[]): string {
 }
 
 export const tabularRouter = Router();
+
+class RouteError extends Error {
+    constructor(
+        readonly status: number,
+        message: string,
+    ) {
+        super(message);
+    }
+}
+
+type TabularDocumentRow = {
+    id: string;
+    filename: string;
+    file_type: string;
+    page_count?: number | null;
+    user_id: string;
+    project_id: string | null;
+};
+
+function sendRouteError(res: Response, err: unknown, fallback: string) {
+    if (err instanceof RouteError) {
+        return void res.status(err.status).json({ detail: err.message });
+    }
+    console.error("[tabular] unexpected route error", err);
+    return void res.status(500).json({ detail: fallback });
+}
+
+function normalizeDocumentIds(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    const ids = value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean);
+    return [...new Set(ids)];
+}
+
+async function requireAccessibleTabularDocuments(params: {
+    db: ReturnType<typeof createServerDb>;
+    userId: string;
+    userEmail?: string | null;
+    documentIds: string[];
+    projectId?: string | null;
+}): Promise<TabularDocumentRow[]> {
+    const ids = [...new Set(params.documentIds.filter(Boolean))];
+    if (ids.length === 0) return [];
+
+    const { data: docs, error } = await params.db
+        .from("documents")
+        .select("id, filename, file_type, page_count, user_id, project_id")
+        .in("id", ids);
+    if (error) throw new RouteError(500, error.message);
+
+    const byId = new Map(
+        ((docs ?? []) as TabularDocumentRow[]).map((doc) => [doc.id, doc]),
+    );
+    if (byId.size !== ids.length) {
+        throw new RouteError(404, "Document not found");
+    }
+
+    const ordered: TabularDocumentRow[] = [];
+    for (const id of ids) {
+        const doc = byId.get(id);
+        if (!doc) throw new RouteError(404, "Document not found");
+        if (params.projectId && doc.project_id !== params.projectId) {
+            throw new RouteError(404, "Document not found");
+        }
+        const access = await ensureDocAccess(
+            { user_id: doc.user_id, project_id: doc.project_id },
+            params.userId,
+            params.userEmail,
+            params.db,
+        );
+        if (!access.ok) throw new RouteError(404, "Document not found");
+        ordered.push(doc);
+    }
+    return ordered;
+}
+
+async function loadProjectTabularDocuments(params: {
+    db: ReturnType<typeof createServerDb>;
+    userId: string;
+    userEmail?: string | null;
+    projectId: string;
+}): Promise<TabularDocumentRow[]> {
+    const access = await checkProjectAccess(
+        params.projectId,
+        params.userId,
+        params.userEmail,
+        params.db,
+    );
+    if (!access.ok) throw new RouteError(404, "Project not found");
+
+    const { data, error } = await params.db
+        .from("documents")
+        .select("id, filename, file_type, page_count, user_id, project_id")
+        .eq("project_id", params.projectId)
+        .order("created_at", { ascending: true });
+    if (error) throw new RouteError(500, error.message);
+    return (data ?? []) as TabularDocumentRow[];
+}
 
 // GET /tabular-review
 tabularRouter.get("/", requireAuth, async (req, res) => {
@@ -184,9 +284,16 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
         };
 
     const db = createServerDb();
-    if (project_id) {
+    if (project_id != null && typeof project_id !== "string") {
+        return void res.status(400).json({ detail: "Invalid project_id" });
+    }
+    const reviewProjectId =
+        typeof project_id === "string" && project_id.trim()
+            ? project_id.trim()
+            : null;
+    if (reviewProjectId) {
         const access = await checkProjectAccess(
-            project_id,
+            reviewProjectId,
             userId,
             userEmail,
             db,
@@ -194,13 +301,33 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
         if (!access.ok)
             return void res.status(404).json({ detail: "Project not found" });
     }
+    const documentIds = normalizeDocumentIds(document_ids);
+    if (
+        !Array.isArray(document_ids) ||
+        documentIds.length !== document_ids.length
+    ) {
+        return void res
+            .status(400)
+            .json({ detail: "document_ids must be a list of document IDs" });
+    }
+    try {
+        await requireAccessibleTabularDocuments({
+            db,
+            userId,
+            userEmail,
+            documentIds,
+            projectId: reviewProjectId,
+        });
+    } catch (err) {
+        return sendRouteError(res, err, "Failed to validate documents");
+    }
     const { data: review, error } = await db
         .from("tabular_reviews")
         .insert({
             user_id: userId,
             title: title ?? null,
             columns_config,
-            project_id: project_id ?? null,
+            project_id: reviewProjectId,
             workflow_id: workflow_id ?? null,
         })
         .select("*")
@@ -210,7 +337,7 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
             .status(500)
             .json({ detail: error?.message ?? "Failed to create review" });
 
-    const cells = document_ids.flatMap((docId) =>
+    const cells = documentIds.flatMap((docId) =>
         columns_config.map((col) => ({
             review_id: review.id,
             document_id: docId,
@@ -322,16 +449,28 @@ tabularRouter.get("/:reviewId", requireAuth, async (req, res) => {
         content: unknown;
     }[];
     const docIds = [...new Set(typedCells.map((c) => c.document_id))];
-    const docsResult =
-        docIds.length > 0
-            ? await db.from("documents").select("*").in("id", docIds)
-            : review.project_id
-              ? await db
-                    .from("documents")
-                    .select("*")
-                    .eq("project_id", review.project_id)
-                    .order("created_at", { ascending: true })
-              : { data: [] as Record<string, unknown>[] };
+    let docs: TabularDocumentRow[];
+    try {
+        docs =
+            docIds.length > 0
+                ? await requireAccessibleTabularDocuments({
+                      db,
+                      userId,
+                      userEmail,
+                      documentIds: docIds,
+                      projectId: review.project_id,
+                  })
+                : review.project_id
+                  ? await loadProjectTabularDocuments({
+                        db,
+                        userId,
+                        userEmail,
+                        projectId: review.project_id,
+                    })
+                  : [];
+    } catch (err) {
+        return sendRouteError(res, err, "Failed to load review documents");
+    }
 
     res.json({
         review: { ...review, is_owner: access.isOwner },
@@ -339,7 +478,7 @@ tabularRouter.get("/:reviewId", requireAuth, async (req, res) => {
             ...cell,
             content: parseCellContent(cell.content),
         })),
-        documents: docsResult.data ?? [],
+        documents: docs,
     });
 });
 
@@ -479,6 +618,91 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
         updates.shared_with = sharedWithUpdate;
     }
 
+    const targetProjectId =
+        req.body.project_id === undefined
+            ? ((existingReview.project_id as string | null) ?? null)
+            : typeof req.body.project_id === "string" &&
+                req.body.project_id.trim()
+              ? req.body.project_id.trim()
+              : null;
+    if (req.body.project_id !== undefined) updates.project_id = targetProjectId;
+    if (targetProjectId) {
+        const projectAccess = await checkProjectAccess(
+            targetProjectId,
+            userId,
+            userEmail,
+            db,
+        );
+        if (!projectAccess.ok)
+            return void res.status(404).json({ detail: "Project not found" });
+    }
+
+    let requestedDocumentIds: string[] | undefined;
+    if (req.body.document_ids !== undefined) {
+        requestedDocumentIds = normalizeDocumentIds(req.body.document_ids);
+        if (
+            !Array.isArray(req.body.document_ids) ||
+            requestedDocumentIds.length !== req.body.document_ids.length
+        ) {
+            return void res.status(400).json({
+                detail: "document_ids must be a list of document IDs",
+            });
+        }
+        try {
+            await requireAccessibleTabularDocuments({
+                db,
+                userId,
+                userEmail,
+                documentIds: requestedDocumentIds,
+                projectId: targetProjectId,
+            });
+        } catch (err) {
+            return sendRouteError(res, err, "Failed to validate documents");
+        }
+    }
+    if (requestedDocumentIds === undefined && req.body.project_id !== undefined) {
+        const { data: existingCellsForMove, error: existingCellsForMoveError } =
+            await db
+                .from("tabular_cells")
+                .select("document_id")
+                .eq("review_id", reviewId);
+        if (existingCellsForMoveError)
+            return void res
+                .status(500)
+                .json({ detail: existingCellsForMoveError.message });
+        const existingDocIds = [
+            ...new Set(
+                ((existingCellsForMove ?? []) as { document_id: string }[]).map(
+                    (cell) => cell.document_id,
+                ),
+            ),
+        ];
+        try {
+            if (existingDocIds.length > 0) {
+                await requireAccessibleTabularDocuments({
+                    db,
+                    userId,
+                    userEmail,
+                    documentIds: existingDocIds,
+                    projectId: targetProjectId,
+                });
+            } else if (targetProjectId) {
+                await loadProjectTabularDocuments({
+                    db,
+                    userId,
+                    userEmail,
+                    projectId: targetProjectId,
+                });
+            }
+        } catch (err) {
+            return sendRouteError(
+                res,
+                err,
+                "Failed to validate review documents",
+            );
+        }
+    }
+
     const { data: updatedReview, error: updateError } = await db
         .from("tabular_reviews")
         .update(updates)
@@ -510,14 +734,13 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
 
         let documentIds: string[];
 
-        if (Array.isArray(req.body.document_ids)) {
+        if (requestedDocumentIds) {
             // document_ids is the new source of truth — delete removed docs' cells
-            const newDocIds = req.body.document_ids as string[];
             const existingDocIds = typedExistingCells.map(
                 (cell) => cell.document_id,
             );
             const removedDocIds = existingDocIds.filter(
-                (id) => !newDocIds.includes(id),
+                (id) => !requestedDocumentIds.includes(id),
             );
 
             if (removedDocIds.length > 0) {
@@ -532,21 +755,35 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
                         .json({ detail: deleteError.message });
             }
 
-            documentIds = newDocIds;
+            documentIds = requestedDocumentIds;
         } else {
             // No document change — derive from existing cells
             documentIds = [
-                ...new Set(
-                    typedExistingCells.map((cell) => cell.document_id),
-                ),
+                ...new Set(typedExistingCells.map((cell) => cell.document_id)),
             ];
-            if (documentIds.length === 0 && existingReview.project_id) {
-                const { data: projectDocs } = await db
-                    .from("documents")
-                    .select("id")
-                    .eq("project_id", existingReview.project_id);
-                documentIds = ((projectDocs ?? []) as { id: string }[]).map(
-                    (doc) => doc.id,
+            try {
+                if (documentIds.length > 0) {
+                    await requireAccessibleTabularDocuments({
+                        db,
+                        userId,
+                        userEmail,
+                        documentIds,
+                        projectId: targetProjectId,
+                    });
+                } else if (targetProjectId) {
+                    const projectDocs = await loadProjectTabularDocuments({
+                        db,
+                        userId,
+                        userEmail,
+                        projectId: targetProjectId,
+                    });
+                    documentIds = projectDocs.map((doc) => doc.id);
+                }
+            } catch (err) {
+                return sendRouteError(
+                    res,
+                    err,
+                    "Failed to validate review documents",
                 );
             }
         }
@@ -605,7 +842,12 @@ tabularRouter.post("/:reviewId/clear-cells", requireAuth, async (req, res) => {
     const { reviewId } = req.params;
     const { document_ids } = req.body as { document_ids?: string[] };
 
-    if (!Array.isArray(document_ids) || document_ids.length === 0)
+    const documentIds = normalizeDocumentIds(document_ids);
+    if (
+        !Array.isArray(document_ids) ||
+        documentIds.length === 0 ||
+        documentIds.length !== document_ids.length
+    )
         return void res
             .status(400)
             .json({ detail: "document_ids is required" });
@@ -622,11 +864,37 @@ tabularRouter.post("/:reviewId/clear-cells", requireAuth, async (req, res) => {
     if (!access.ok)
         return void res.status(404).json({ detail: "Review not found" });
 
+    const { data: targetCells, error: cellLookupError } = await db
+        .from("tabular_cells")
+        .select("document_id")
+        .eq("review_id", reviewId)
+        .in("document_id", documentIds);
+    if (cellLookupError)
+        return void res.status(500).json({ detail: cellLookupError.message });
+    const cellDocIds = new Set(
+        ((targetCells ?? []) as { document_id: string }[]).map(
+            (cell) => cell.document_id,
+        ),
+    );
+    if (cellDocIds.size !== documentIds.length)
+        return void res.status(404).json({ detail: "Document not found" });
+    try {
+        await requireAccessibleTabularDocuments({
+            db,
+            userId,
+            userEmail,
+            documentIds,
+            projectId: review.project_id,
+        });
+    } catch (err) {
+        return sendRouteError(res, err, "Failed to validate documents");
+    }
+
     const { error } = await db
         .from("tabular_cells")
         .update({ content: null, status: "pending" })
         .eq("review_id", reviewId)
-        .in("document_id", document_ids);
+        .in("document_id", documentIds);
     if (error) return void res.status(500).json({ detail: error.message });
     res.status(204).send();
 });
@@ -673,13 +941,31 @@ tabularRouter.post(
         if (!column)
             return void res.status(400).json({ detail: "Column not found" });
 
-        const { data: doc } = await db
-            .from("documents")
-            .select("id, filename, file_type")
-            .eq("id", document_id)
-            .single();
-        if (!doc)
+        const { data: cell, error: cellError } = await db
+            .from("tabular_cells")
+            .select("id")
+            .eq("review_id", reviewId)
+            .eq("document_id", document_id)
+            .eq("column_index", column_index)
+            .maybeSingle();
+        if (cellError)
+            return void res.status(500).json({ detail: cellError.message });
+        if (!cell)
             return void res.status(404).json({ detail: "Document not found" });
+
+        let doc: TabularDocumentRow;
+        try {
+            const docs = await requireAccessibleTabularDocuments({
+                db,
+                userId,
+                userEmail,
+                documentIds: [document_id],
+                projectId: review.project_id,
+            });
+            doc = docs[0];
+        } catch (err) {
+            return sendRouteError(res, err, "Failed to validate document");
+        }
         const docActive = await loadActiveVersion(document_id, db);
 
         await db
@@ -774,20 +1060,27 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
             ),
         ),
     ];
-    let docs: Record<string, unknown>[] = [];
-    if (docIds.length > 0) {
-        const { data } = await db
-            .from("documents")
-            .select("id, filename, file_type, page_count")
-            .in("id", docIds);
-        docs = data ?? [];
-    } else if (review.project_id) {
-        const { data } = await db
-            .from("documents")
-            .select("id, filename, file_type, page_count")
-            .eq("project_id", review.project_id)
-            .order("created_at", { ascending: true });
-        docs = data ?? [];
+    let docs: TabularDocumentRow[] = [];
+    try {
+        docs =
+            docIds.length > 0
+                ? await requireAccessibleTabularDocuments({
+                      db,
+                      userId,
+                      userEmail,
+                      documentIds: docIds,
+                      projectId: review.project_id,
+                  })
+                : review.project_id
+                  ? await loadProjectTabularDocuments({
+                        db,
+                        userId,
+                        userEmail,
+                        projectId: review.project_id,
+                    })
+                  : [];
+    } catch (err) {
+        return sendRouteError(res, err, "Failed to validate documents");
     }
 
     const { tabular_model, api_keys } = await getUserModelSettings(userId, db);
@@ -897,9 +1190,7 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
             const payload = isDemoBudgetError(err)
                 ? demoBudgetErrorPayload(err)
                 : { type: "error", message: String(err) };
-            write(
-                `data: ${JSON.stringify(payload)}\n\ndata: [DONE]\n\n`,
-            );
+            write(`data: ${JSON.stringify(payload)}\n\ndata: [DONE]\n\n`);
         } catch {
             /* ignore */
         }
@@ -1145,17 +1436,26 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
         .select("*")
         .eq("review_id", reviewId);
 
-    const docIds = [
-        ...new Set((cells ?? []).map((c: any) => c.document_id as string)),
+    const docIds: string[] = [
+        ...new Set<string>(
+            (cells ?? []).map((c: any) => c.document_id as string),
+        ),
     ];
     let docs: { id: string; filename: string }[] = [];
     if (docIds.length > 0) {
-        const { data } = await db
-            .from("documents")
-            .select("id, filename")
-            .in("id", docIds)
-            .order("created_at", { ascending: true });
-        docs = (data ?? []) as { id: string; filename: string }[];
+        try {
+            docs = (
+                await requireAccessibleTabularDocuments({
+                    db,
+                    userId,
+                    userEmail,
+                    documentIds: docIds,
+                    projectId: review.project_id,
+                })
+            ).map((doc) => ({ id: doc.id, filename: doc.filename }));
+        } catch (err) {
+            return sendRouteError(res, err, "Failed to validate documents");
+        }
     }
 
     const sortedColumns = (
@@ -1605,7 +1905,11 @@ async function readTabularDocumentText(params: {
     if (caseText) return caseText;
 
     const active = params.versionId
-        ? await loadActiveVersion(params.documentId, params.db, params.versionId)
+        ? await loadActiveVersion(
+              params.documentId,
+              params.db,
+              params.versionId,
+          )
         : await loadActiveVersion(params.documentId, params.db);
     if (!active) return "";
 

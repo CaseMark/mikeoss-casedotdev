@@ -280,6 +280,8 @@ BETTER_AUTH_URL=http://localhost:${BACKEND_PORT}
 BETTER_AUTH_SECRET=${case_secret}
 BETTER_AUTH_TRUSTED_ORIGINS=http://localhost:${FRONTEND_PORT}
 DOWNLOAD_SIGNING_SECRET=${case_secret}
+DOWNLOAD_TOKEN_TTL_SECONDS=604800
+DOWNLOAD_TOKEN_ALLOW_LEGACY=false
 
 CASE_WEBHOOK_SHARED_SECRET=${case_secret}
 CASE_WEBHOOK_ALLOW_UNSIGNED=false
@@ -287,6 +289,8 @@ CASE_WEBHOOK_ALLOW_UNSIGNED=false
 MIKE_AUTH_RATE_LIMIT_WINDOW_MS=900000
 MIKE_AUTH_RATE_LIMIT_MAX=30
 MIKE_AUTH_CREDENTIAL_RATE_LIMIT_MAX=10
+MIKE_AI_RATE_LIMIT_WINDOW_MS=900000
+MIKE_AI_RATE_LIMIT_MAX=60
 
 CASE_API_BASE_URL=https://api.case.dev
 CASE_KEY_ENCRYPTION_SECRET=${case_secret}
@@ -328,13 +332,16 @@ print_env_guidance() {
 Local env checklist
   backend/.env:
     Required for auth/database: DATABASE_URL, BETTER_AUTH_SECRET
-    Recommended for persistent downloads: DOWNLOAD_SIGNING_SECRET
+    Recommended for downloads: DOWNLOAD_SIGNING_SECRET,
+      DOWNLOAD_TOKEN_TTL_SECONDS, DOWNLOAD_TOKEN_ALLOW_LEGACY=false
     Optional Case DB metadata: CASE_DATABASE_PROJECT_ID, CASE_DATABASE_BRANCH
     Required for Case key encryption: CASE_KEY_ENCRYPTION_SECRET
     Required for Case webhooks: CASE_WEBHOOK_SHARED_SECRET
       (local polling still works when no Case webhook is configured)
     Auth rate limiting: MIKE_AUTH_RATE_LIMIT_WINDOW_MS,
       MIKE_AUTH_RATE_LIMIT_MAX, MIKE_AUTH_CREDENTIAL_RATE_LIMIT_MAX
+    AI route rate limiting: MIKE_AI_RATE_LIMIT_WINDOW_MS,
+      MIKE_AI_RATE_LIMIT_MAX
     Case API keys are normally saved per user in /account/models and power
     LLM routing plus canonical Case Vault document storage.
     Optional BYOK model keys for direct Anthropic/Gemini routing can also be
