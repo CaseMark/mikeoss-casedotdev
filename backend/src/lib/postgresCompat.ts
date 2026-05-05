@@ -80,6 +80,34 @@ function selectSql(columns: string | undefined): string {
   return normalized.map((column) => quoteIdent(column)).join(", ");
 }
 
+const jsonbColumnsByTable: Record<string, Set<string>> = {
+  case_api_credentials: new Set(["capabilities"]),
+  case_document_links: new Set(["object_metadata"]),
+  case_skill_favorites: new Set(["skill_tags"]),
+  chat_messages: new Set(["annotations", "content", "files", "workflow"]),
+  demo_usage_events: new Set(["metadata", "units"]),
+  documents: new Set(["structure_tree"]),
+  projects: new Set(["case_matter_metadata", "shared_with"]),
+  provider_api_credentials: new Set(["capabilities"]),
+  tabular_cells: new Set(["citations"]),
+  tabular_review_chat_messages: new Set(["annotations", "content"]),
+  tabular_reviews: new Set(["columns_config", "shared_with"]),
+  workflows: new Set(["case_skill_tags", "columns_config"]),
+};
+
+function tableNameOnly(table: string): string {
+  return table.split(".").at(-1) ?? table;
+}
+
+function isJsonbColumn(table: string, column: string): boolean {
+  return jsonbColumnsByTable[tableNameOnly(table)]?.has(column) ?? false;
+}
+
+function jsonbValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  return JSON.stringify(value);
+}
+
 function normalizeRows(values: Record<string, unknown> | Record<string, unknown>[]) {
   return Array.isArray(values) ? values : [values];
 }
@@ -138,6 +166,13 @@ class SqlBuilder {
   param(value: unknown) {
     this.values.push(value);
     return `$${this.values.length}`;
+  }
+
+  columnParam(table: string, column: string, value: unknown) {
+    if (isJsonbColumn(table, column)) {
+      return `${this.param(jsonbValue(value))}::jsonb`;
+    }
+    return this.param(value);
   }
 
   condition(filter: Filter): string {
@@ -376,7 +411,9 @@ class PostgresQueryBuilder implements PromiseLike<QueryResponse> {
     const valuesSql = rows
       .map(
         (row) =>
-          `(${columns.map((column) => builder.param(row[column])).join(", ")})`,
+          `(${columns
+            .map((column) => builder.columnParam(this.table, column, row[column]))
+            .join(", ")})`,
       )
       .join(", ");
     const returning = this.returning ? ` returning ${selectSql(this.selected)}` : "";
@@ -390,7 +427,14 @@ class PostgresQueryBuilder implements PromiseLike<QueryResponse> {
     const values = (this.payload ?? {}) as Record<string, unknown>;
     const columns = Object.keys(values);
     const setSql = columns
-      .map((column) => `${quoteIdent(column)} = ${builder.param(values[column])}`)
+      .map(
+        (column) =>
+          `${quoteIdent(column)} = ${builder.columnParam(
+            this.table,
+            column,
+            values[column],
+          )}`,
+      )
       .join(", ");
     const returning = this.returning ? ` returning ${selectSql(this.selected)}` : "";
     const sql = `update ${quoteTable(this.table)} set ${setSql}${this.whereSql(
@@ -418,7 +462,9 @@ class PostgresQueryBuilder implements PromiseLike<QueryResponse> {
     const valuesSql = rows
       .map(
         (row) =>
-          `(${columns.map((column) => builder.param(row[column])).join(", ")})`,
+          `(${columns
+            .map((column) => builder.columnParam(this.table, column, row[column]))
+            .join(", ")})`,
       )
       .join(", ");
     const updateColumns = columns.filter((column) => !conflictColumns.includes(column));
