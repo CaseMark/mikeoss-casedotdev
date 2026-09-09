@@ -1,0 +1,53 @@
+name: Dependency vulnerability scan
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - staging
+      - preview
+      - bench/OP-194-dependency-scanner
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  osv-scan:
+    name: OSV dependency scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Scan committed dependency manifests
+        id: osv
+        continue-on-error: true
+        uses: google/osv-scanner-action/osv-scanner-action@c51854704019a247608d928f370c98740469d4b5 # v2.3.5
+        with:
+          scan-args: |-
+            --output=dependency-scan-results.json
+            --format=json
+            --recursive
+            ./
+
+      - name: Retain scan results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: osv-dependency-scan-${{ github.sha }}
+          path: dependency-scan-results.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce vulnerability gate
+        if: steps.osv.outcome != 'success'
+        run: |
+          echo "OSV-Scanner reported vulnerabilities or could not complete; review the retained result." >&2
+          exit 1
